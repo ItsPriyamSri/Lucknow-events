@@ -1,0 +1,444 @@
+"""Main ingestion pipeline.
+
+Steps (per requirements §8):
+1.  Fetch via adapter
+2.  Snapshot + SHA256 hash (skip if unchanged)
+3.  Raw deterministic extract → insert RawEvent
+4.  AI extraction (conditional on confidence thresholds)
+5.  Normalize (date / location / text / url)
+6.  Relevance score
+7.  Deduplicate
+8.  Publish decision
+9.  Enqueue feed rebuild
+"""
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import structlog
+from slugify import slugify
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from api.core.database import SessionLocal
+from api.models.crawl import CrawlRun
+from api.models.event import Event
+from api.models.moderation import ModerationQueueItem
+from api.models.raw_event import RawEvent
+from api.models.source import Source
+from ingestion.dedup import find_duplicate
+from ingestion.normalizers.date import parse_datetime
+from ingestion.normalizers.location import normalize_city, normalize_locality
+from ingestion.normalizers.text import (
+    MAX_EXTRACTION_CHARS,
+    clean_text,
+    ensure_absolute_url,
+)
+from ingestion.publish_score import PublishInputs, compute_publish_score, field_completeness
+from ingestion.relevance import NormalizedEventData, compute_relevance
+from ingestion.storage import content_hash, get_storage, snapshot_key
+
+
+log = structlog.get_logger(__name__)
+
+
+async def run_source_pipeline(source_id: str) -> dict[str, int]:
+    """Entry point called by Celery task. Returns counts dict."""
+    async with SessionLocal() as db:
+        source = await db.get(Source, source_id)
+        if source is None:
+            log.error("pipeline.source_not_found", source_id=source_id)
+            return {"error": "source_not_found"}
+
+        crawl_run = CrawlRun(
+            id=str(uuid.uuid4()),
+            source_id=source_id,
+            started_at=datetime.now(timezone.utc),
+            status="running",
+        )
+        db.add(crawl_run)
+        await db.commit()
+
+        counts = {"events_found": 0, "events_new": 0, "events_published": 0, "events_queued": 0}
+        try:
+            counts = await _process_source(db, source, crawl_run)
+            crawl_run.status = "success"
+        except Exception as exc:
+            log.exception("pipeline.failed", source_id=source_id, error=str(exc))
+            crawl_run.status = "failed"
+            crawl_run.error_summary = str(exc)[:500]
+            source.consecutive_failures = (source.consecutive_failures or 0) + 1
+            source.last_failure_at = datetime.now(timezone.utc)
+        finally:
+            crawl_run.finished_at = datetime.now(timezone.utc)
+            for k, v in counts.items():
+                setattr(crawl_run, k, v)
+            source.last_crawled_at = datetime.now(timezone.utc)
+            if crawl_run.status == "success":
+                source.last_success_at = source.last_crawled_at
+                source.consecutive_failures = 0
+            await db.commit()
+
+        return counts
+
+
+async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun) -> dict[str, int]:
+    from ingestion.adapters.gdg import GDGAdapter
+    from ingestion.adapters.generic import GenericAdapter
+
+    adapter_map = {"gdg": GDGAdapter(), "generic": GenericAdapter()}
+    adapter = adapter_map.get(source.platform or "generic") or adapter_map["generic"]  # type: ignore[arg-type]
+
+    source_dict = {
+        "id": str(source.id),
+        "base_url": source.base_url,
+        "config_json": source.config_json or {},
+    }
+    pages = await adapter.fetch(source_dict)
+
+    storage = get_storage()
+    counts = {"events_found": 0, "events_new": 0, "events_published": 0, "events_queued": 0}
+
+    for page in pages:
+        raw_bytes = (
+            json.dumps(page.html_or_json, ensure_ascii=False).encode()
+            if isinstance(page.html_or_json, (dict, list))
+            else str(page.html_or_json).encode()
+        )
+        url_hash = content_hash(page.url.encode())
+        snap_key = snapshot_key(str(source.id), url_hash)
+        page_hash = content_hash(raw_bytes)
+
+        # ── Step 2: snapshot + hash check ──────────────────────────────
+        existing_snap = storage.get(snap_key + ".hash")
+        if existing_snap and existing_snap.decode() == page_hash:
+            log.debug("pipeline.skip_unchanged", url=page.url)
+            continue
+        storage.put(snap_key, raw_bytes)
+        storage.put(snap_key + ".hash", page_hash.encode())
+
+        raw_events = adapter.extract_raw_events(page)
+        counts["events_found"] += len(raw_events)
+
+        for raw in raw_events:
+            result = await _process_raw_event(db, source, raw, adapter, page.url)
+            counts["events_new"] += result.get("new", 0)
+            counts["events_published"] += result.get("published", 0)
+            counts["events_queued"] += result.get("queued", 0)
+
+    return counts
+
+
+async def _process_raw_event(
+    db: AsyncSession,
+    source: Source,
+    raw: dict[str, Any],
+    adapter: Any,
+    source_url: str,
+) -> dict[str, int]:
+    from ingestion.adapters.base import BaseAdapter
+
+    ext_id = adapter.get_external_id(raw) if hasattr(adapter, "get_external_id") else None
+
+    # ── Step 3: insert RawEvent ──────────────────────────────────────────
+    raw_event = RawEvent(
+        id=str(uuid.uuid4()),
+        source_id=str(source.id),
+        external_id=ext_id,
+        raw_payload_json=raw,
+        extraction_method="deterministic",
+        extraction_confidence=0.0,
+        pipeline_status="pending",
+    )
+    db.add(raw_event)
+    await db.flush()
+
+    # ── Step 4: deterministic parse + conditional AI ──────────────────
+    parsed, confidence = _deterministic_parse(raw, source.platform or "")
+    raw_event.extraction_confidence = confidence
+
+    if source.platform == "generic" or confidence < 0.60:
+        parsed, confidence = await _ai_extract(raw_event, parsed, source.platform or "", source_url, confidence)
+        raw_event.extraction_method = "ai"
+        raw_event.extraction_confidence = confidence
+        raw_event.ai_extracted_json = parsed
+    elif confidence < 0.85:
+        parsed = await _ai_classify(parsed)
+        raw_event.extraction_method = "hybrid"
+
+    # ── Step 5: normalize ─────────────────────────────────────────────
+    parsed["city"] = normalize_city(parsed.get("city"))
+    parsed["locality"] = normalize_locality(parsed.get("locality"))
+    parsed["start_at"] = parse_datetime(parsed.get("start_at"))
+    parsed["end_at"] = parse_datetime(parsed.get("end_at"))
+    parsed["description"] = clean_text(parsed.get("description") or "")
+    parsed["canonical_url"] = ensure_absolute_url(parsed.get("canonical_url") or source_url, source.base_url)
+    parsed["registration_url"] = ensure_absolute_url(
+        parsed.get("registration_url") or parsed.get("canonical_url") or source_url,
+        source.base_url,
+    )
+
+    raw_event.pipeline_status = "normalized"
+    await db.flush()
+
+    # ── Step 6: relevance score ───────────────────────────────────────
+    ev_data = NormalizedEventData(
+        mode=parsed.get("mode"),
+        city=parsed.get("city"),
+        address=parsed.get("address"),
+        venue_name=parsed.get("venue_name"),
+        organizer_name=parsed.get("organizer_name"),
+        community_name=parsed.get("community_name"),
+    )
+    relevance = compute_relevance(ev_data)
+
+    if relevance < 0.3:
+        raw_event.pipeline_status = "rejected"
+        await db.commit()
+        return {}
+
+    # ── Step 7: deduplicate ───────────────────────────────────────────
+    dup = await find_duplicate(
+        db,
+        title=parsed.get("title"),
+        start_at=parsed.get("start_at"),
+        organizer=parsed.get("organizer_name") or parsed.get("community_name"),
+    )
+    if dup is not None:
+        raw_event.pipeline_status = "rejected"
+        log.debug("pipeline.duplicate_skipped", title=parsed.get("title"))
+        await db.commit()
+        return {}
+
+    dedup_certainty = 1.0
+
+    # ── Step 8: publish decision ──────────────────────────────────────
+    completeness = field_completeness(parsed)
+    score_inputs = PublishInputs(
+        source_trust_score=source.trust_score,
+        extraction_confidence=confidence,
+        location_confidence=relevance,
+        field_completeness=completeness,
+        relevance_score=relevance,
+        dedup_certainty=dedup_certainty,
+    )
+    publish_score = compute_publish_score(score_inputs)
+
+    if publish_score >= 0.80:
+        result = await _publish_event(db, raw_event, parsed, source, relevance, publish_score)
+        raw_event.pipeline_status = "published"
+        await db.commit()
+        # ── Step 9: enqueue feed rebuild ─────────────────────────────
+        try:
+            from workers.tasks.feeds import rebuild_all_feeds
+            rebuild_all_feeds.delay()
+        except Exception:
+            pass
+        return {"new": 1, "published": 1}
+
+    if 0.55 <= publish_score < 0.80:
+        # Re-run classification once and re-evaluate.
+        parsed = await _ai_classify(parsed)
+        completeness = field_completeness(parsed)
+        score_inputs.field_completeness = completeness
+        publish_score = compute_publish_score(score_inputs)
+        if publish_score >= 0.80:
+            await _publish_event(db, raw_event, parsed, source, relevance, publish_score)
+            raw_event.pipeline_status = "published"
+            await db.commit()
+            return {"new": 1, "published": 1}
+
+    # Below threshold → moderation queue.
+    await _queue_moderation(db, raw_event, "low_confidence")
+    raw_event.pipeline_status = "moderation"
+    await db.commit()
+    return {"new": 1, "queued": 1}
+
+
+def _deterministic_parse(raw: dict[str, Any], platform: str) -> tuple[dict[str, Any], float]:
+    """Best-effort field extraction without AI. Returns (parsed_dict, confidence)."""
+    parsed: dict[str, Any] = {}
+    found = 0
+    total = 5  # title, start_at, canonical_url, mode, description
+
+    for title_key in ("title", "name", "event_title"):
+        if raw.get(title_key):
+            parsed["title"] = str(raw[title_key])
+            found += 1
+            break
+
+    for url_key in ("url", "event_url", "link", "canonical_url", "absolute_url"):
+        if raw.get(url_key):
+            parsed["canonical_url"] = str(raw[url_key])
+            found += 1
+            break
+
+    for start_key in ("start_at", "start_date", "starts_at", "datetime", "date", "start_time"):
+        if raw.get(start_key):
+            parsed["start_at"] = str(raw[start_key])
+            found += 1
+            break
+
+    for end_key in ("end_at", "end_date", "ends_at", "end_time"):
+        if raw.get(end_key):
+            parsed["end_at"] = str(raw[end_key])
+            break
+
+    parsed["mode"] = raw.get("mode") or raw.get("event_mode") or raw.get("type")
+    if parsed["mode"]:
+        found += 0.5
+
+    for desc_key in ("description", "summary", "body", "about"):
+        if raw.get(desc_key):
+            parsed["description"] = str(raw[desc_key])
+            found += 0.5
+            break
+
+    parsed["short_description"] = raw.get("short_description") or raw.get("tagline")
+    parsed["venue_name"] = raw.get("venue") or raw.get("venue_name") or raw.get("location")
+    parsed["city"] = raw.get("city") or raw.get("location_city")
+    parsed["locality"] = raw.get("locality") or raw.get("neighborhood")
+    parsed["community_name"] = raw.get("community_name") or raw.get("group_name") or raw.get("organizer")
+    parsed["organizer_name"] = raw.get("organizer_name") or raw.get("host")
+    parsed["registration_url"] = raw.get("registration_url") or raw.get("rsvp_url")
+    parsed["poster_url"] = raw.get("poster_url") or raw.get("image") or raw.get("banner_url")
+    parsed["is_free"] = raw.get("is_free", True)
+    parsed["topics"] = raw.get("topics") or raw.get("tags") or []
+    parsed["event_type"] = raw.get("event_type") or raw.get("type")
+    parsed["source_platform"] = platform
+
+    confidence = min(1.0, found / total)
+    return parsed, confidence
+
+
+async def _ai_extract(
+    raw_event: RawEvent,
+    partial: dict[str, Any],
+    platform: str,
+    source_url: str,
+    current_confidence: float,
+) -> tuple[dict[str, Any], float]:
+    """Call Gemini extraction agent; on any failure return the partial parsed dict."""
+    try:
+        from ai.extraction_agent import ExtractionInput, extract_event
+
+        text = clean_text(
+            json.dumps(raw_event.raw_payload_json, ensure_ascii=False),
+            max_chars=MAX_EXTRACTION_CHARS,
+        )
+        inp = ExtractionInput(
+            source_platform=platform,
+            source_url=source_url,
+            page_url=partial.get("canonical_url") or source_url,
+            cleaned_text=text,
+            partial_hints=partial,
+        )
+        result = await extract_event(inp)
+        if result.not_an_event:
+            return partial, 0.0
+
+        merged = dict(partial)
+        merged.update({k: v for k, v in result.model_dump().items() if v is not None})
+        return merged, result.confidence
+    except Exception as exc:
+        log.error("pipeline.ai_extract_failed", error=str(exc))
+        return partial, current_confidence
+
+
+async def _ai_classify(parsed: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from ai.classification_agent import ClassificationInput, classify_event
+
+        inp = ClassificationInput(
+            title=parsed.get("title") or "",
+            description=parsed.get("description"),
+            organizer_name=parsed.get("organizer_name"),
+            community_name=parsed.get("community_name"),
+            source_platform=parsed.get("source_platform") or "",
+            mode=parsed.get("mode"),
+        )
+        result = await classify_event(inp)
+        updated = dict(parsed)
+        if result.event_type:
+            updated["event_type"] = result.event_type
+        if result.topics:
+            updated["topics"] = result.topics
+        if result.audience:
+            updated["audience"] = result.audience
+        updated["is_student_friendly"] = result.is_student_friendly
+        return updated
+    except Exception as exc:
+        log.error("pipeline.ai_classify_failed", error=str(exc))
+        return parsed
+
+
+async def _publish_event(
+    db: AsyncSession,
+    raw_event: RawEvent,
+    parsed: dict[str, Any],
+    source: Source,
+    relevance_score: float,
+    publish_score: float,
+) -> Event:
+    title = parsed.get("title") or "Untitled Event"
+    base_slug = slugify(title, max_length=280)
+    slug = base_slug
+    # Ensure slug uniqueness.
+    counter = 1
+    while (await db.execute(select(Event).where(Event.slug == slug))).scalar_one_or_none():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    start_at = parsed.get("start_at")
+    end_at = parsed.get("end_at")
+    expires_at = (end_at + timedelta(hours=48)) if isinstance(end_at, datetime) else None
+
+    event = Event(
+        id=str(uuid.uuid4()),
+        slug=slug,
+        title=title,
+        description=parsed.get("description"),
+        short_description=parsed.get("short_description") or (parsed.get("description") or "")[:500] or None,
+        start_at=start_at or datetime.now(timezone.utc),
+        end_at=end_at,
+        city=parsed.get("city") or "Lucknow",
+        locality=parsed.get("locality"),
+        venue_name=parsed.get("venue_name"),
+        address=parsed.get("address"),
+        mode=parsed.get("mode"),
+        event_type=parsed.get("event_type"),
+        topics_json=parsed.get("topics") or [],
+        audience_json=parsed.get("audience") or [],
+        organizer_name=parsed.get("organizer_name"),
+        community_name=parsed.get("community_name"),
+        source_platform=source.platform,
+        canonical_url=parsed["canonical_url"],
+        registration_url=parsed.get("registration_url") or parsed["canonical_url"],
+        poster_url=parsed.get("poster_url"),
+        is_free=bool(parsed.get("is_free", True)),
+        is_student_friendly=bool(parsed.get("is_student_friendly", False)),
+        relevance_score=relevance_score,
+        publish_score=publish_score,
+        raw_event_id=str(raw_event.id),
+        published_at=datetime.now(timezone.utc),
+        expires_at=expires_at,
+    )
+    db.add(event)
+    await db.flush()
+    return event
+
+
+async def _queue_moderation(db: AsyncSession, raw_event: RawEvent, reason: str) -> None:
+    item = ModerationQueueItem(
+        id=str(uuid.uuid4()),
+        entity_type="raw_event",
+        entity_id=str(raw_event.id),
+        reason=reason,
+        severity="low",
+        status="pending",
+    )
+    db.add(item)
+    await db.flush()
