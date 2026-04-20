@@ -2,22 +2,20 @@
 
 import { useState } from "react";
 import { eventService } from "@/lib/api";
-import { Link2, Image as ImageIcon, Send, Sparkles } from "lucide-react";
+import { Link2, Send, Sparkles } from "lucide-react";
 import Link from 'next/link';
 
 export default function SubmitPage() {
   const [url, setUrl] = useState("");
-  const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error" | "rate_limited">("idle");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus("loading");
     try {
-      await eventService.submitEvent({ url, poster: file || undefined });
+      await eventService.submitEvent({ url });
       setStatus("success");
       setUrl("");
-      setFile(null);
     } catch (err: any) {
       if (err.response?.status === 429) {
         setStatus("rate_limited");
@@ -67,24 +65,7 @@ export default function SubmitPage() {
                   className="w-full rounded-xl border border-border bg-input py-3 pl-12 pr-4 text-base focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary transition-all"
                 />
               </div>
-              <p className="text-xs text-muted-foreground mt-1">We'll use AI to extract all details automatically.</p>
-            </div>
-
-            <div className="space-y-2">
-              <label htmlFor="poster" className="text-sm font-bold text-foreground uppercase tracking-wider flex justify-between">
-                <span>Event Poster</span>
-                <span className="text-muted-foreground font-normal">Optional</span>
-              </label>
-              <div className="relative">
-                <ImageIcon className="absolute left-4 top-3.5 h-5 w-5 text-muted-foreground" />
-                <input
-                  id="poster"
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  className="w-full rounded-xl border border-border bg-input py-2.5 pl-12 pr-4 text-sm text-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-1 file:text-sm file:font-semibold file:text-primary-foreground hover:file:bg-primary/90 focus:outline-none"
-                />
-              </div>
+              <p className="text-xs text-muted-foreground mt-1">We&apos;ll use AI to extract all details automatically.</p>
             </div>
 
             {status === "error" && (
@@ -95,7 +76,7 @@ export default function SubmitPage() {
             
             {status === "rate_limited" && (
               <div className="p-4 bg-primary/10 border border-primary/20 text-primary rounded-xl text-sm font-medium">
-                You're submitting too quickly! Please wait a while before trying again.
+                You&apos;re submitting too quickly! Please wait a while before trying again.
               </div>
             )}
 

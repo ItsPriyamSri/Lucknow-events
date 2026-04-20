@@ -8,17 +8,24 @@ export const revalidate = 60; // SSR with 60s cache
 export default async function HomePage() {
   let featuredEvents: Event[] = [];
   let thisWeekEvents: Event[] = [];
-  
+  let studentEvents: Event[] = [];
+
   try {
     featuredEvents = await eventService.getFeatured();
   } catch (e) {
     console.error("Failed to fetch featured events:", e);
   }
-  
+
   try {
     thisWeekEvents = await eventService.getThisWeek();
   } catch (e) {
     console.error("Failed to fetch this week events:", e);
+  }
+
+  try {
+    studentEvents = await eventService.getStudentFriendly();
+  } catch (e) {
+    console.error("Failed to fetch student-friendly events:", e);
   }
 
   return (
@@ -69,7 +76,14 @@ export default async function HomePage() {
         ) : (
           <div className="rounded-xl border border-dashed border-border p-12 text-center flex flex-col items-center">
             <p className="text-muted-foreground mb-4">No featured events currently available.</p>
-            <Link href="/submit" className="text-primary hover:underline text-sm font-medium">Be the first to submit one</Link>
+            <div className="flex flex-wrap gap-4 justify-center">
+              <Link href="/submit" className="text-primary hover:underline text-sm font-medium">
+                Submit an event
+              </Link>
+              <Link href="/events" className="text-muted-foreground hover:text-primary text-sm font-medium">
+                Browse all events →
+              </Link>
+            </div>
           </div>
         )}
       </section>
@@ -85,8 +99,40 @@ export default async function HomePage() {
             {thisWeekEvents.map(event => <EventCard key={event.id} event={event} />)}
           </div>
         ) : (
-          <div className="rounded-xl border border-dashed border-border p-12 text-center flex flex-col items-center">
-            <p className="text-muted-foreground">Check back later for upcoming events this week, or view the full calendar.</p>
+          <div className="rounded-xl border border-dashed border-border p-12 text-center flex flex-col items-center gap-4">
+            <p className="text-muted-foreground">Nothing scheduled this week yet.</p>
+            <div className="flex flex-wrap gap-4 justify-center">
+              <Link href="/calendar" className="text-primary text-sm font-semibold hover:underline">
+                Open calendar
+              </Link>
+              <Link href="/events" className="text-muted-foreground text-sm hover:text-primary">
+                All events
+              </Link>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Student-friendly shelf */}
+      <section className="space-y-6 w-full max-w-6xl mx-auto pb-12">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold tracking-tight">Student-friendly & free</h2>
+          <Link href="/events?is_student_friendly=true&is_free=true" className="text-sm text-primary hover:underline">
+            View filtered list →
+          </Link>
+        </div>
+        {studentEvents.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {studentEvents.map((event) => (
+              <EventCard key={event.id} event={event} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-border p-12 text-center">
+            <p className="text-muted-foreground mb-4">No student-friendly free events in the next 30 days.</p>
+            <Link href="/submit" className="text-primary font-semibold hover:underline text-sm">
+              Suggest a college meetup
+            </Link>
           </div>
         )}
       </section>

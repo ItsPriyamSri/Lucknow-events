@@ -86,10 +86,21 @@ async def run_source_pipeline(source_id: str) -> dict[str, int]:
 
 
 async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun) -> dict[str, int]:
+    from ingestion.adapters.commudle import CommudleAdapter
+    from ingestion.adapters.devfolio import DevfolioAdapter
     from ingestion.adapters.gdg import GDGAdapter
     from ingestion.adapters.generic import GenericAdapter
+    from ingestion.adapters.meetup import MeetupAdapter
+    from ingestion.adapters.unstop import UnstopAdapter
 
-    adapter_map = {"gdg": GDGAdapter(), "generic": GenericAdapter()}
+    adapter_map = {
+        "gdg": GDGAdapter(),
+        "generic": GenericAdapter(),
+        "meetup": MeetupAdapter(),
+        "commudle": CommudleAdapter(),
+        "devfolio": DevfolioAdapter(),
+        "unstop": UnstopAdapter(),
+    }
     adapter = adapter_map.get(source.platform or "generic") or adapter_map["generic"]  # type: ignore[arg-type]
 
     source_dict = {
@@ -160,7 +171,12 @@ async def _process_raw_event(
     parsed, confidence = _deterministic_parse(raw, source.platform or "")
     raw_event.extraction_confidence = confidence
 
-    if source.platform == "generic" or confidence < 0.60:
+    _AI_EXTRACT_PLATFORMS = frozenset({"generic", "meetup", "commudle", "devfolio", "unstop"})
+    needs_ai_extract = confidence < 0.60 or (
+        (source.platform or "") in _AI_EXTRACT_PLATFORMS and bool(raw.get("_cleaned_text"))
+    )
+
+    if needs_ai_extract:
         parsed, confidence = await _ai_extract(raw_event, parsed, source.platform or "", source_url, confidence)
         raw_event.extraction_method = "ai"
         raw_event.extraction_confidence = confidence

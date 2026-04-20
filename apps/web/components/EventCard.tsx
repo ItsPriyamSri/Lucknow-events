@@ -1,7 +1,11 @@
 import { Event } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { ArrowRight, MapPin, Calendar, Clock, Link as LinkIcon } from "lucide-react";
-import Link from 'next/link';
+import { ArrowRight, MapPin, Calendar } from "lucide-react";
+import Image from "next/image";
+import Link from "next/link";
+
+const topicLabel = (t: unknown): string =>
+  typeof t === "string" ? t : (t as any)?.name ?? String(t);
 
 export function EventCard({ event }: { event: Event }) {
   const registerUrl = event.registration_url || event.canonical_url;
@@ -10,7 +14,13 @@ export function EventCard({ event }: { event: Event }) {
     <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-all hover:border-primary/50 group h-full">
       {event.poster_url ? (
         <div className="h-40 w-full overflow-hidden border-b border-border">
-          <img src={event.poster_url} alt={event.title} className="h-full w-full object-cover transition-transform group-hover:scale-105" />
+          <Image
+            src={event.poster_url}
+            alt={event.title}
+            width={1200}
+            height={600}
+            className="h-full w-full object-cover transition-transform group-hover:scale-105"
+          />
         </div>
       ) : (
         <div className="h-40 w-full border-b border-border bg-gradient-to-br from-background to-card flex items-center justify-center p-6 text-center">

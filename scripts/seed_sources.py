@@ -25,6 +25,19 @@ log = structlog.get_logger(__name__)
 
 INITIAL_SOURCES = [
     {
+        "name": "Meetup Lucknow (Tech)",
+        "platform": "meetup",
+        "base_url": "https://www.meetup.com/find/",
+        "crawl_strategy": "graphql_or_playwright",
+        "trust_score": 0.72,
+        "enabled": False,
+        "crawl_interval_hours": 6,
+        "config_json": {
+            "find_url": "https://www.meetup.com/find/?source=EVENTS&location=in--Lucknow--India&distance=twentyFiveMiles",
+            "max_items": 12,
+        },
+    },
+    {
         "name": "GDG Lucknow",
         "platform": "gdg",
         "base_url": "https://gdg.community.dev/gdg-lucknow/",
@@ -50,9 +63,9 @@ INITIAL_SOURCES = [
         "base_url": "https://www.commudle.com/events",
         "crawl_strategy": "playwright",
         "trust_score": 0.80,
-        "enabled": False,  # Phase 3 — enable when adapter is implemented
+        "enabled": False,
         "crawl_interval_hours": 6,
-        "config_json": {"city_filter": "lucknow"},
+        "config_json": {"city_filter": "lucknow", "max_items": 10},
     },
     {
         "name": "Devfolio India Hackathons",
@@ -60,19 +73,19 @@ INITIAL_SOURCES = [
         "base_url": "https://devfolio.co/hackathons",
         "crawl_strategy": "playwright",
         "trust_score": 0.75,
-        "enabled": False,  # Phase 3
+        "enabled": False,
         "crawl_interval_hours": 6,
-        "config_json": {"location_filter": "lucknow"},
+        "config_json": {"location_filter": "lucknow", "max_items": 10},
     },
     {
         "name": "Unstop Lucknow",
         "platform": "unstop",
         "base_url": "https://unstop.com/competitions",
-        "crawl_strategy": "playwright",
+        "crawl_strategy": "api_then_playwright",
         "trust_score": 0.70,
-        "enabled": False,  # Phase 3
+        "enabled": True,
         "crawl_interval_hours": 6,
-        "config_json": {"location": "Lucknow"},
+        "config_json": {"location": "Lucknow", "max_items": 20},
     },
 ]
 
