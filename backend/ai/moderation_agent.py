@@ -40,7 +40,7 @@ async def triage_submission(inp: ModerationInput) -> GeminiModerationOutput:
         "notes": inp.notes,
         "poster_text": inp.poster_text,
     }
-    resp = client.models.generate_content(
+    resp = await client.aio.models.generate_content(
         model=model,
         contents=[SYSTEM_PROMPT, str(payload)],
         config=json_config(GeminiModerationOutput),

@@ -66,7 +66,7 @@ async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
         "Extract the event data as JSON."
     )
 
-    resp = client.models.generate_content(
+    resp = await client.aio.models.generate_content(
         model=model,
         contents=[SYSTEM_PROMPT, user_prompt],
         config=json_config(GeminiExtractionOutput),

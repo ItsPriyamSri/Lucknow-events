@@ -43,7 +43,7 @@ async def classify_event(inp: ClassificationInput) -> GeminiClassificationOutput
         "source_platform": inp.source_platform,
         "mode": inp.mode,
     }
-    resp = client.models.generate_content(
+    resp = await client.aio.models.generate_content(
         model=model,
         contents=[SYSTEM_PROMPT, str(user_prompt)],
         config=json_config(GeminiClassificationOutput),

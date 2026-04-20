@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-3.0-flash"
 
     STORAGE_TYPE: str = "local"
     LOCAL_STORAGE_PATH: str = "/app/data/snapshots"
