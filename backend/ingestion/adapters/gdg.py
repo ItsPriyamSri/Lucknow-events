@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -38,59 +39,81 @@ class GDGAdapter(BaseAdapter):
 
         pages: list[ScrapedPage] = []
 
-        # ── Attempt 1: v0 events API ─────────────────────────────────────
-        api_url = f"https://gdg.community.dev/api/event/?chapter={chapter_slug}&status=Live"
-        try:
-            async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _USER_AGENT}) as client:
-                await _jitter()
-                r = await client.get(api_url)
-                if r.status_code == 200:
-                    try:
-                        payload: Any = r.json()
-                    except Exception:
-                        payload = r.text
-                    pages.append(
-                        ScrapedPage(
-                            url=api_url,
-                            html_or_json=payload,
-                            fetched_at=datetime.now(timezone.utc),
-                            status_code=r.status_code,
-                            page_type="api_response",
-                        )
-                    )
-                else:
-                    log.warning("gdg.api_non_200", status=r.status_code, url=api_url)
-        except Exception as exc:
-            log.warning("gdg.api_fetch_failed", error=str(exc), url=api_url)
+        cfg = source.get("config_json") or {}
+        max_items = int(cfg.get("max_items", 12))
 
-        if pages:
-            return pages
+        # NOTE: gdg.community.dev has started returning 403 to unauthenticated API calls.
+        # So we crawl the publicly-rendered chapter page, extract event detail links,
+        # then fetch each detail page (which is stable and contains structured text).
 
-        # ── Attempt 2: chapter page (HTML) ───────────────────────────────
         chapter_url = source.get("base_url", f"https://gdg.community.dev/{chapter_slug}/")
         try:
-            async with httpx.AsyncClient(timeout=30, headers={"User-Agent": _USER_AGENT}) as client:
+            async with httpx.AsyncClient(
+                timeout=30,
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                follow_redirects=True,
+            ) as client:
                 await _jitter()
-                r = await client.get(chapter_url, follow_redirects=True)
-                pages.append(
-                    ScrapedPage(
-                        url=chapter_url,
-                        html_or_json=r.text,
-                        fetched_at=datetime.now(timezone.utc),
-                        status_code=r.status_code,
-                        page_type="listing",
-                    )
-                )
+                r = await client.get(chapter_url)
+                listing_html = r.text
         except Exception as exc:
             log.error("gdg.chapter_fetch_failed", error=str(exc), url=chapter_url)
+            return []
+
+        # Extract event detail URLs from listing HTML.
+        # Example: https://gdg.community.dev/events/details/google-gdg-lucknow-presents-...
+        href_pat = (
+            r'href="(https://gdg\.community\.dev/events/details/[^"#?]+)"'
+        )
+        detail_urls = list(dict.fromkeys(re.findall(href_pat, listing_html, flags=re.I)))
+
+        if not detail_urls:
+            # Fallback: still return the chapter page so the pipeline can try AI extraction.
+            pages.append(
+                ScrapedPage(
+                    url=chapter_url,
+                    html_or_json=listing_html,
+                    fetched_at=datetime.now(timezone.utc),
+                    status_code=200,
+                    page_type="listing",
+                )
+            )
+            return pages
+
+        async with httpx.AsyncClient(
+            timeout=30,
+            headers={"User-Agent": _USER_AGENT},
+            follow_redirects=True,
+        ) as client:
+            for url in detail_urls[:max_items]:
+                try:
+                    await _jitter()
+                    rr = await client.get(url)
+                    pages.append(
+                        ScrapedPage(
+                            url=url,
+                            html_or_json=rr.text,
+                            fetched_at=datetime.now(timezone.utc),
+                            status_code=rr.status_code,
+                            page_type="detail",
+                        )
+                    )
+                except Exception as exc:
+                    log.warning("gdg.event_fetch_failed", url=url, error=str(exc))
 
         return pages
 
     def extract_raw_events(self, page: ScrapedPage) -> list[dict[str, Any]]:
-        if page.page_type == "api_response":
-            return self._parse_api_response(page)
-        # For HTML pages, return a single item so the pipeline will run AI extraction.
-        return [{"_html": page.html_or_json, "canonical_url": page.url}]
+        # We currently rely on AI extraction for HTML pages (listing or detail).
+        # Provide cleaned text to the AI layer.
+        from ingestion.normalizers.text import MAX_EXTRACTION_CHARS, clean_text
+
+        text = clean_text(str(page.html_or_json), max_chars=MAX_EXTRACTION_CHARS)
+        return [{"_cleaned_text": text, "canonical_url": page.url}]
 
     def _parse_api_response(self, page: ScrapedPage) -> list[dict[str, Any]]:
         data = page.html_or_json

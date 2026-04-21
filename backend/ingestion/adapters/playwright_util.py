@@ -24,24 +24,67 @@ async def playwright_render(url: str) -> str:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as p:
+            import asyncio
+
             browser = await p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
-            ctx = await browser.new_context(user_agent=USER_AGENT)
-            page = await ctx.new_page()
-            import asyncio
-
-            await asyncio.sleep(random.uniform(0.5, 2.0))
             try:
-                await page.goto(url, wait_until="networkidle", timeout=45_000)
-            except Exception:
-                await page.goto(url, timeout=45_000)
-            content = await page.inner_text("body")
-            await browser.close()
-            return content
+                ctx = await browser.new_context(user_agent=USER_AGENT)
+                page = await ctx.new_page()
+
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+
+                async def _render() -> str:
+                    # "networkidle" can hang on heavily dynamic pages; prefer a safer default.
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    except Exception:
+                        await page.goto(url, timeout=45_000)
+                    return await page.inner_text("body")
+
+                # Hard cap total render time so crawls can't get stuck "running" forever.
+                return await asyncio.wait_for(_render(), timeout=70)
+            finally:
+                await browser.close()
     except Exception as exc:
         log.warning("playwright.render_failed", url=url, error=str(exc))
+        return await httpx_fetch_text(url)
+
+
+async def playwright_fetch_html(url: str, *, post_load_wait_ms: int = 0) -> str:
+    """Render page and return HTML (`page.content()`); falls back to httpx on failure."""
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            import asyncio
+
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                ctx = await browser.new_context(user_agent=USER_AGENT)
+                page = await ctx.new_page()
+
+                await asyncio.sleep(random.uniform(0.5, 2.0))
+
+                async def _render() -> str:
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                    except Exception:
+                        await page.goto(url, timeout=45_000)
+                    if post_load_wait_ms:
+                        await page.wait_for_timeout(post_load_wait_ms)
+                    return await page.content()
+
+                return await asyncio.wait_for(_render(), timeout=70)
+            finally:
+                await browser.close()
+    except Exception as exc:
+        log.warning("playwright.html_failed", url=url, error=str(exc))
         return await httpx_fetch_text(url)
 
 

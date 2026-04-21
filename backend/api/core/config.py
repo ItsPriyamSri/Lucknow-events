@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-3.0-flash"
+    AI_MODE: str = "gemini"  # gemini | mock
+    AI_FALLBACK_TO_MOCK: bool = True
 
     STORAGE_TYPE: str = "local"
     LOCAL_STORAGE_PATH: str = "/app/data/snapshots"

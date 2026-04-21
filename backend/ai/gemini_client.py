@@ -18,9 +18,13 @@ def get_client():
 def json_config(schema: type):
     from google.genai import types  # type: ignore
 
+    # Docs: prefer response_json_schema (JSON Schema dict) with response_mime_type="application/json".
+    # This works cleanly with Pydantic via model_json_schema().
+    response_json_schema = schema.model_json_schema() if hasattr(schema, "model_json_schema") else None
+
     return types.GenerateContentConfig(
         response_mime_type="application/json",
-        response_schema=schema,
+        response_json_schema=response_json_schema,
         temperature=0.1,
         max_output_tokens=2048,
     )

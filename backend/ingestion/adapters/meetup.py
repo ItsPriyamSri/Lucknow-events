@@ -12,7 +12,12 @@ import httpx
 import structlog
 
 from ingestion.adapters.base import BaseAdapter, ScrapedPage
-from ingestion.adapters.playwright_util import USER_AGENT, httpx_fetch_text, playwright_render
+from ingestion.adapters.playwright_util import (
+    USER_AGENT,
+    httpx_fetch_text,
+    playwright_fetch_html,
+    playwright_render,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -38,9 +43,10 @@ class MeetupAdapter(BaseAdapter):
         find_url = cfg.get("find_url") or (
             "https://www.meetup.com/find/?source=EVENTS&location=in--Lucknow--India&distance=twentyFiveMiles"
         )
+        # Meetup find pages are client-rendered; use rendered HTML for href discovery.
         listing_html = await httpx_fetch_text(find_url)
-        if not listing_html:
-            listing_html = await playwright_render(find_url)
+        if len(listing_html) < 1000:
+            listing_html = await playwright_fetch_html(find_url, post_load_wait_ms=3500)
 
         href_re = re.compile(
             r'href="(https://www\.meetup\.com/[^"/]+/events/[^"/]+/?)"',

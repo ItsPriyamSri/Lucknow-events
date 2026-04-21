@@ -14,9 +14,15 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="Asia/Kolkata",
     enable_utc=True,
+    task_default_queue="default",
 )
 
-celery_app.autodiscover_tasks(["workers.tasks"])
+celery_app.autodiscover_tasks([
+    "workers.tasks.crawl",
+    "workers.tasks.pipeline",
+    "workers.tasks.feeds",
+    "workers.tasks.submissions",
+])
 
 # Celery Beat schedule lives here (import side-effect).
 from workers.schedules import CELERYBEAT_SCHEDULE  # noqa: E402

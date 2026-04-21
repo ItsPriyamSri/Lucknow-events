@@ -45,6 +45,21 @@ from ingestion.storage import content_hash, get_storage, snapshot_key
 log = structlog.get_logger(__name__)
 
 
+def _json_safe(obj: Any) -> Any:
+    """
+    Ensure a structure is JSON-serializable for JSONB storage.
+    This prevents in-place mutation later in the pipeline (e.g. datetimes) from
+    breaking flush/commit when persisting snapshots like ai_extracted_json.
+    """
+
+    def _default(o: Any) -> str:
+        if isinstance(o, datetime):
+            return o.isoformat()
+        return str(o)
+
+    return json.loads(json.dumps(obj, default=_default))
+
+
 async def run_source_pipeline(source_id: str) -> dict[str, int]:
     """Entry point called by Celery task. Returns counts dict."""
     async with SessionLocal() as db:
@@ -91,6 +106,7 @@ async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun)
     from ingestion.adapters.gdg import GDGAdapter
     from ingestion.adapters.generic import GenericAdapter
     from ingestion.adapters.meetup import MeetupAdapter
+    from ingestion.adapters.static import StaticAdapter
     from ingestion.adapters.unstop import UnstopAdapter
 
     adapter_map = {
@@ -100,6 +116,7 @@ async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun)
         "commudle": CommudleAdapter(),
         "devfolio": DevfolioAdapter(),
         "unstop": UnstopAdapter(),
+        "static": StaticAdapter(),
     }
     adapter = adapter_map.get(source.platform or "generic") or adapter_map["generic"]  # type: ignore[arg-type]
 
@@ -154,17 +171,29 @@ async def _process_raw_event(
 
     ext_id = adapter.get_external_id(raw) if hasattr(adapter, "get_external_id") else None
 
-    # ── Step 3: insert RawEvent ──────────────────────────────────────────
-    raw_event = RawEvent(
-        id=str(uuid.uuid4()),
-        source_id=str(source.id),
-        external_id=ext_id,
-        raw_payload_json=raw,
-        extraction_method="deterministic",
-        extraction_confidence=0.0,
-        pipeline_status="pending",
-    )
-    db.add(raw_event)
+    # ── Step 3: insert or update RawEvent ─────────────────────────────────
+    raw_event = None
+    if ext_id:
+        stmt = select(RawEvent).where(
+            (RawEvent.source_id == str(source.id)) & (RawEvent.external_id == ext_id)
+        )
+        raw_event = (await db.execute(stmt)).scalar_one_or_none()
+
+    if raw_event:
+        raw_event.raw_payload_json = raw
+        raw_event.pipeline_status = "pending"
+    else:
+        raw_event = RawEvent(
+            id=str(uuid.uuid4()),
+            source_id=str(source.id),
+            external_id=ext_id,
+            raw_payload_json=raw,
+            extraction_method="deterministic",
+            extraction_confidence=0.0,
+            pipeline_status="pending",
+        )
+        db.add(raw_event)
+
     await db.flush()
 
     # ── Step 4: deterministic parse + conditional AI ──────────────────
@@ -180,7 +209,7 @@ async def _process_raw_event(
         parsed, confidence = await _ai_extract(raw_event, parsed, source.platform or "", source_url, confidence)
         raw_event.extraction_method = "ai"
         raw_event.extraction_confidence = confidence
-        raw_event.ai_extracted_json = parsed
+        raw_event.ai_extracted_json = _json_safe(parsed)
     elif confidence < 0.85:
         parsed = await _ai_classify(parsed)
         raw_event.extraction_method = "hybrid"

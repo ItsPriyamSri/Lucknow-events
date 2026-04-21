@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.models.moderation import ModerationQueueItem
 from api.models.submission import ManualSubmission
 
 
@@ -23,16 +22,22 @@ async def create_submission(
     db.add(submission)
     await db.flush()
 
-    moderation = ModerationQueueItem(
-        entity_type="manual_submission",
-        entity_id=str(submission.id),
-        reason="manual_submission",
-        severity="low",
-        status="pending",
-    )
-    db.add(moderation)
-
+    # Immediately process the URL via the ingestion pipeline.
+    # The task will mark the submission accepted/skipped/needs_review.
+    submission.status = "queued"
     await db.commit()
     await db.refresh(submission)
+
+    try:
+        from workers.celery_app import celery_app
+
+        celery_app.send_task(
+            "workers.tasks.submissions.process_manual_submission",
+            args=[str(submission.id)],
+        )
+    except Exception:
+        # If celery isn't running, keep it queued so it can be retried later.
+        pass
+
     return submission
 

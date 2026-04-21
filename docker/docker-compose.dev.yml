@@ -14,39 +14,55 @@ services:
     ports: ["6379:6379"]
 
   api:
-    build: ./backend
+    build: ../backend
     command: uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
     ports: ["8000:8000"]
-    volumes: [./backend:/app, ./data:/app/data, ./scripts:/app/scripts]
-    env_file: .env
+    volumes:
+      - ../backend:/app:z
+      - ../data:/app/data:z
+      - ../scripts:/app/scripts:z
+    env_file: ../.env
     depends_on: [postgres, redis]
 
   worker:
-    build: ./backend
-    command: celery -A workers.celery_app worker --loglevel=info -c 4 -Q default
-    volumes: [./backend:/app, ./data:/app/data, ./scripts:/app/scripts]
-    env_file: .env
+    build: ../backend
+    command: celery -A workers.celery_app worker --loglevel=info -c 4
+    volumes:
+      - ../backend:/app:z
+      - ../data:/app/data:z
+      - ../scripts:/app/scripts:z
+    env_file: ../.env
+    environment:
+      - PYTHONPATH=/app
     depends_on: [redis, postgres]
 
   beat:
-    build: ./backend
+    build: ../backend
     command: celery -A workers.celery_app beat --loglevel=info
-    volumes: [./backend:/app, ./data:/app/data, ./scripts:/app/scripts]
-    env_file: .env
+    volumes:
+      - ../backend:/app:z
+      - ../data:/app/data:z
+      - ../scripts:/app/scripts:z
+    env_file: ../.env
     depends_on: [redis]
 
   flower:
-    build: ./backend
+    build: ../backend
     command: celery -A workers.celery_app flower --port=5555
     ports: ["5555:5555"]
-    env_file: .env
+    volumes:
+      - ../backend:/app:z
+      - ../data:/app/data:z
+      - ../scripts:/app/scripts:z
+    env_file: ../.env
     depends_on: [redis]
 
   web:
-    build: ./apps/web
+    build: ../apps/web
     command: pnpm dev
     ports: ["3000:3000"]
-    volumes: [./apps/web:/app]
+    volumes:
+      - ../apps/web:/app:z
     environment:
       # Server-side fetches from inside the web container must hit the api service.
       INTERNAL_API_URL: http://api:8000/api/v1

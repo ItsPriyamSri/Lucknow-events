@@ -9,7 +9,12 @@ from typing import Any
 import structlog
 
 from ingestion.adapters.base import BaseAdapter, ScrapedPage
-from ingestion.adapters.playwright_util import httpx_fetch_text, playwright_render, unique_hrefs
+from ingestion.adapters.playwright_util import (
+    httpx_fetch_text,
+    playwright_fetch_html,
+    playwright_render,
+    unique_hrefs,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -29,22 +34,29 @@ class DevfolioAdapter(BaseAdapter):
         if len(html) < 500:
             html = await playwright_render(base)
 
-        pat = re.compile(r'href="(https://[^"]*devfolio\.co/[^"?#]+)"', re.I)
-        links = unique_hrefs(html, base, pat, limit=max_items * 3)
-        # Prefer hackathon / event paths
-        filtered = [
-            u
-            for u in links
-            if "/hackathons/" in u or "/events/" in u or "/hackathon/" in u
-        ]
-        if not filtered:
-            filtered = links
+        # Devfolio listing pages contain relative links like /hackathons/<slug>.
+        # Restrict aggressively to hackathon detail pages to avoid crawling site chrome pages.
+        def _extract_links(rendered_html: str) -> list[str]:
+            pat = re.compile(r'href="([^"]+)"', re.I)
+            links = unique_hrefs(rendered_html, base, pat, limit=max_items * 15)
+            deny = {"open", "past", "applied"}
+            out: list[str] = []
+            for u in links:
+                if "devfolio.co/hackathons/" not in u:
+                    continue
+                slug = u.rstrip("/").split("/hackathons/")[-1].split("/")[0].strip()
+                if not slug or slug in deny:
+                    continue
+                # Heuristic: real hackathon slugs are usually short path segments (not tabs like /open).
+                if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]{2,}", slug):
+                    continue
+                out.append(u)
+            return out
 
-        # Optional crude location filter using page text later; here filter URL/query if present
-        if location_hint:
-            narrowed = [u for u in filtered if location_hint in u.lower()]
-            if narrowed:
-                filtered = narrowed
+        filtered = _extract_links(html)
+        if not filtered:
+            # Hackathons listing is heavily client-rendered; retry with Playwright-rendered HTML.
+            filtered = _extract_links(await playwright_fetch_html(base, post_load_wait_ms=5000))
 
         pages: list[ScrapedPage] = []
         for link in filtered[:max_items]:

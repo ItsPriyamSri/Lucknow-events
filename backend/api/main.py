@@ -3,8 +3,13 @@ from __future__ import annotations
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from api.core.config import settings
+from api.core.limiter import limiter
 from api.routers import router as api_v1_router
 
 
@@ -26,6 +31,10 @@ log = structlog.get_logger(__name__)
 
 app = FastAPI(title="Lucknow Tech Events API", debug=settings.DEBUG)
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
@@ -40,4 +49,3 @@ app.include_router(api_v1_router, prefix="/api/v1")
 @app.get("/health")
 async def health():
     return {"ok": True}
-

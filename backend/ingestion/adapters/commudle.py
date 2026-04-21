@@ -9,7 +9,12 @@ from typing import Any
 import structlog
 
 from ingestion.adapters.base import BaseAdapter, ScrapedPage
-from ingestion.adapters.playwright_util import httpx_fetch_text, playwright_render, unique_hrefs
+from ingestion.adapters.playwright_util import (
+    httpx_fetch_text,
+    playwright_fetch_html,
+    playwright_render,
+    unique_hrefs,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -24,25 +29,40 @@ class CommudleAdapter(BaseAdapter):
         max_items = int(cfg.get("max_items", 12))
         now = datetime.now(timezone.utc)
 
+        # Commudle is JS-heavy; href discovery needs rendered HTML (not inner_text).
         html = await httpx_fetch_text(base)
         if len(html) < 500:
-            html = await playwright_render(base)
+            html = await playwright_fetch_html(base, post_load_wait_ms=4000)
 
-        # Event detail URLs on commudle
-        pat = re.compile(r'href="(https://www\.commudle\.com/events/[^"?#]+)"', re.I)
-        links = unique_hrefs(html, base, pat, limit=max_items)
-        if not links:
-            # Broader match
-            pat2 = re.compile(r'href="(/events/[^"?#]+)"', re.I)
-            for m in pat2.finditer(html):
-                u = "https://www.commudle.com" + m.group(1)
-                if u not in links:
-                    links.append(u)
-                if len(links) >= max_items:
-                    break
+        # Event detail URLs on Commudle commonly look like:
+        # - https://www.commudle.com/events/<slug>
+        # - https://www.commudle.com/communities/<slug>/events/<slug>
+        # - https://www.commudle.com/communities/<slug>/hackathons/<slug>
+        pat = re.compile(
+            r'href="('
+            r'https://www\.commudle\.com/(?:events|communities/[^/]+/(?:events|hackathons))/[^"?#]+'
+            r'|/(?:events|communities/[^/]+/(?:events|hackathons))/[^"?#]+'
+            r')"',
+            re.I,
+        )
+        links = unique_hrefs(html, base, pat, limit=max_items * 3)
+
+        # Normalize relative → absolute; keep only commudle event-ish URLs.
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for u in links:
+            if u.startswith("/"):
+                u = "https://www.commudle.com" + u
+            u = u.split("?")[0].rstrip("/")
+            if "commudle.com/" not in u:
+                continue
+            if u in seen:
+                continue
+            seen.add(u)
+            normalized.append(u)
 
         pages: list[ScrapedPage] = []
-        for link in links[:max_items]:
+        for link in normalized[:max_items]:
             body = await playwright_render(link)
             pages.append(
                 ScrapedPage(
