@@ -34,11 +34,19 @@ async def find_duplicate(
     title: str | None,
     start_at: datetime | None,
     organizer: str | None,
+    url: str | None = None,
 ) -> Event | None:
     """Return an existing Event with the same dedupe key, or None."""
-    key = dedupe_key(title, start_at, organizer)
+    
+    # 1. Exact URL match is always a duplicate
+    if url:
+        stmt = select(Event).filter(Event.canonical_url == url).limit(1)
+        res = await db.execute(stmt)
+        dup = res.scalar_one_or_none()
+        if dup:
+            return dup
 
-    # Check for events with same title (case-insensitive) within ±12h.
+    # 2. Check for events with same title (case-insensitive) within ±12h.
     if title and start_at:
         window_start = start_at - timedelta(hours=12)
         window_end = start_at + timedelta(hours=12)
@@ -53,4 +61,11 @@ async def find_duplicate(
         )
         res = await db.execute(stmt)
         return res.scalar_one_or_none()
+        
+    # 3. If no start_at exists but Title is completely identical
+    if title and not start_at:
+        stmt = select(Event).where(Event.title.ilike(title)).limit(1)
+        res = await db.execute(stmt)
+        return res.scalar_one_or_none()
+
     return None

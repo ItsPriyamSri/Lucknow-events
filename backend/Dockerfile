@@ -17,7 +17,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock* /app/
 RUN uv sync --frozen --no-dev || uv sync --no-dev
 # install email-validator separately (required by pydantic[email] / EmailStr)
-RUN /opt/venv/bin/python -m ensurepip --upgrade && /opt/venv/bin/python -m pip install email-validator -q
+RUN /opt/venv/bin/python -m ensurepip --upgrade \
+    && /opt/venv/bin/python -m pip install email-validator playwright-stealth -q
 
 # Playwright runtime: install Chromium + OS deps for scraping.
 RUN /opt/venv/bin/python -m playwright install --with-deps chromium

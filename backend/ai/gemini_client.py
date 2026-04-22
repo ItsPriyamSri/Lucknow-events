@@ -15,7 +15,7 @@ def get_client():
     return genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
-def json_config(schema: type):
+def json_config(schema: type, system_instruction: str | None = None):
     from google.genai import types  # type: ignore
 
     # Docs: prefer response_json_schema (JSON Schema dict) with response_mime_type="application/json".
@@ -25,7 +25,7 @@ def json_config(schema: type):
     return types.GenerateContentConfig(
         response_mime_type="application/json",
         response_json_schema=response_json_schema,
+        system_instruction=system_instruction,
         temperature=0.1,
         max_output_tokens=2048,
     )
-

@@ -33,6 +33,20 @@ def compute_publish_score(inp: PublishInputs) -> float:
     )
 
 
+def publish_threshold(source_trust_score: float) -> float:
+    """
+    Dynamic publish threshold based on how trusted the source is.
+    High-trust sources (e.g. GDG, Commudle) get a lower threshold so
+    events with all core fields but missing venue still get published.
+    Low-trust sources (e.g. user submissions) keep the strict 0.75 bar.
+    """
+    if source_trust_score >= 0.85:
+        return 0.60
+    if source_trust_score >= 0.70:
+        return 0.68
+    return 0.75
+
+
 def field_completeness(data: dict) -> float:
     """Compute fraction of the key required fields that are non-null/non-empty."""
     required = ["title", "start_at", "canonical_url"]
@@ -41,3 +55,4 @@ def field_completeness(data: dict) -> float:
     bonus = sum(0.1 for f in bonus_fields if data.get(f))
     base = good / len(required)
     return min(1.0, base + bonus)
+

@@ -37,12 +37,14 @@ from ingestion.normalizers.text import (
     clean_text,
     ensure_absolute_url,
 )
-from ingestion.publish_score import PublishInputs, compute_publish_score, field_completeness
+from ingestion.publish_score import PublishInputs, compute_publish_score, field_completeness, publish_threshold
 from ingestion.relevance import NormalizedEventData, compute_relevance
 from ingestion.storage import content_hash, get_storage, snapshot_key
 
 
 log = structlog.get_logger(__name__)
+
+_SNAPSHOT_SCHEMA_VERSION = "v2-meta-jsonld"
 
 
 def _json_safe(obj: Any) -> Any:
@@ -101,21 +103,11 @@ async def run_source_pipeline(source_id: str) -> dict[str, int]:
 
 
 async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun) -> dict[str, int]:
-    from ingestion.adapters.commudle import CommudleAdapter
-    from ingestion.adapters.devfolio import DevfolioAdapter
-    from ingestion.adapters.gdg import GDGAdapter
     from ingestion.adapters.generic import GenericAdapter
-    from ingestion.adapters.meetup import MeetupAdapter
     from ingestion.adapters.static import StaticAdapter
-    from ingestion.adapters.unstop import UnstopAdapter
 
     adapter_map = {
-        "gdg": GDGAdapter(),
         "generic": GenericAdapter(),
-        "meetup": MeetupAdapter(),
-        "commudle": CommudleAdapter(),
-        "devfolio": DevfolioAdapter(),
-        "unstop": UnstopAdapter(),
         "static": StaticAdapter(),
     }
     adapter = adapter_map.get(source.platform or "generic") or adapter_map["generic"]  # type: ignore[arg-type]
@@ -137,12 +129,15 @@ async def _process_source(db: AsyncSession, source: Source, crawl_run: CrawlRun)
             else str(page.html_or_json).encode()
         )
         url_hash = content_hash(page.url.encode())
-        snap_key = snapshot_key(str(source.id), url_hash)
+        # Snapshot key includes a schema/version so changes in parsers can trigger
+        # a one-time refresh across all sources without manual cleanup.
+        snap_key = snapshot_key(str(source.id), f"{_SNAPSHOT_SCHEMA_VERSION}:{url_hash}")
         page_hash = content_hash(raw_bytes)
 
         # ── Step 2: snapshot + hash check ──────────────────────────────
         existing_snap = storage.get(snap_key + ".hash")
-        if existing_snap and existing_snap.decode() == page_hash:
+        always_refresh = bool((source.config_json or {}).get("always_refresh"))
+        if (not always_refresh) and existing_snap and existing_snap.decode() == page_hash:
             log.debug("pipeline.skip_unchanged", url=page.url)
             continue
         storage.put(snap_key, raw_bytes)
@@ -240,8 +235,15 @@ async def _process_raw_event(
     )
     relevance = compute_relevance(ev_data)
 
-    if relevance < 0.3:
+    if relevance < 0.3 and source.platform != "static":
         raw_event.pipeline_status = "rejected"
+        await db.commit()
+        return {}
+
+    # ── Step 6b: reject junk titles produced by scraping noise ──────────
+    if not _is_valid_title(parsed.get("title")):
+        raw_event.pipeline_status = "rejected"
+        log.debug("pipeline.junk_title_rejected", title=str(parsed.get("title", ""))[:120])
         await db.commit()
         return {}
 
@@ -251,12 +253,23 @@ async def _process_raw_event(
         title=parsed.get("title"),
         start_at=parsed.get("start_at"),
         organizer=parsed.get("organizer_name") or parsed.get("community_name"),
+        url=parsed.get("canonical_url"),
     )
     if dup is not None:
-        raw_event.pipeline_status = "rejected"
-        log.debug("pipeline.duplicate_skipped", title=parsed.get("title"))
+        # If we already have the event, attempt a safe metadata refresh (fix wrong dates,
+        # missing poster, empty description) instead of dropping on the floor.
+        updated = await _maybe_refresh_existing_event(db, dup, parsed)
+        raw_event.pipeline_status = "duplicate"
         await db.commit()
-        return {}
+        if updated:
+            try:
+                from workers.tasks.feeds import rebuild_all_feeds
+
+                rebuild_all_feeds.delay()
+            except Exception:
+                pass
+        log.debug("pipeline.duplicate_refresh", title=parsed.get("title"), updated=updated)
+        return {"updated": 1} if updated else {}
 
     dedup_certainty = 1.0
 
@@ -272,7 +285,8 @@ async def _process_raw_event(
     )
     publish_score = compute_publish_score(score_inputs)
 
-    if publish_score >= 0.80:
+    threshold = publish_threshold(source.trust_score or 0.7)
+    if publish_score >= threshold:
         result = await _publish_event(db, raw_event, parsed, source, relevance, publish_score)
         raw_event.pipeline_status = "published"
         await db.commit()
@@ -284,13 +298,13 @@ async def _process_raw_event(
             pass
         return {"new": 1, "published": 1}
 
-    if 0.55 <= publish_score < 0.80:
+    if threshold - 0.20 <= publish_score < threshold:
         # Re-run classification once and re-evaluate.
         parsed = await _ai_classify(parsed)
         completeness = field_completeness(parsed)
         score_inputs.field_completeness = completeness
         publish_score = compute_publish_score(score_inputs)
-        if publish_score >= 0.80:
+        if publish_score >= threshold:
             await _publish_event(db, raw_event, parsed, source, relevance, publish_score)
             raw_event.pipeline_status = "published"
             await db.commit()
@@ -301,6 +315,30 @@ async def _process_raw_event(
     raw_event.pipeline_status = "moderation"
     await db.commit()
     return {"new": 1, "queued": 1}
+
+
+_JUNK_TITLE_RE = __import__("re").compile(
+    r"^(?:\{|\[|\.site-nav|\.nav-|function\s|\(function|\.site-|var |-webkit-|\*\s*\{)",
+    __import__("re").IGNORECASE,
+)
+
+
+def _is_valid_title(title: Any) -> bool:
+    """Return False if title looks like scraped JS/CSS noise or a JSON-encoded dict."""
+    if not title:
+        return False
+    s = str(title).strip()
+    if len(s) < 4 or len(s) > 600:
+        return False
+    if s.lower() in {"meta description:", "page text:", "json-ld:", "poster/image url:"}:
+        return False
+    # Starts with { or [ → JSON dict/array leaked into title field
+    if s.startswith('{') or s.startswith('['):
+        return False
+    # CSS/JS noise patterns
+    if _JUNK_TITLE_RE.search(s):
+        return False
+    return True
 
 
 def _deterministic_parse(raw: dict[str, Any], platform: str) -> tuple[dict[str, Any], float]:
@@ -370,10 +408,18 @@ async def _ai_extract(
     try:
         from ai.extraction_agent import ExtractionInput, extract_event
 
-        text = clean_text(
-            json.dumps(raw_event.raw_payload_json, ensure_ascii=False),
-            max_chars=MAX_EXTRACTION_CHARS,
-        )
+        raw = raw_event.raw_payload_json or {}
+        # Prefer the pre-cleaned text from the adapter (e.g. GenericAdapter / GDG fallback)
+        # rather than JSON-encoding the whole raw dict, which sends JS/CSS boilerplate
+        # to Gemini and causes it to return junk titles.
+        if isinstance(raw, dict) and raw.get("_cleaned_text"):
+            text = str(raw["_cleaned_text"])[:MAX_EXTRACTION_CHARS]
+        else:
+            text = clean_text(
+                json.dumps(raw, ensure_ascii=False),
+                max_chars=MAX_EXTRACTION_CHARS,
+            )
+
         inp = ExtractionInput(
             source_platform=platform,
             source_url=source_url,
@@ -383,6 +429,7 @@ async def _ai_extract(
         )
         result = await extract_event(inp)
         if result.not_an_event:
+            log.debug("pipeline.ai_not_an_event", url=partial.get("canonical_url"))
             return partial, 0.0
 
         merged = dict(partial)
@@ -447,7 +494,7 @@ async def _publish_event(
         title=title,
         description=parsed.get("description"),
         short_description=parsed.get("short_description") or (parsed.get("description") or "")[:500] or None,
-        start_at=start_at or datetime.now(timezone.utc),
+        start_at=start_at if isinstance(start_at, datetime) else datetime(2099, 12, 31, tzinfo=timezone.utc),
         end_at=end_at,
         city=parsed.get("city") or "Lucknow",
         locality=parsed.get("locality"),
@@ -474,6 +521,61 @@ async def _publish_event(
     db.add(event)
     await db.flush()
     return event
+
+
+async def _maybe_refresh_existing_event(db: AsyncSession, event: Event, parsed: dict[str, Any]) -> bool:
+    """
+    Update an existing Event only when the incoming data is clearly better.
+    This is primarily to correct cases where:
+      - start_at was missing and we fell back to "now"
+      - poster_url / description were empty at publish time
+    """
+    changed = False
+
+    new_start = parsed.get("start_at")
+    if isinstance(new_start, datetime):
+        # If start_at looks like it was defaulted at publish time, it will be very close to published_at.
+        looks_defaulted = False
+        if event.published_at is not None:
+            try:
+                looks_defaulted = abs((event.start_at - event.published_at).total_seconds()) < 120
+            except Exception:
+                looks_defaulted = False
+
+        # Only overwrite if existing looks defaulted OR if new start differs materially (>= 6h).
+        materially_different = abs((event.start_at - new_start).total_seconds()) >= 6 * 3600
+        if (looks_defaulted or materially_different) and new_start != event.start_at:
+            event.start_at = new_start
+            changed = True
+
+    new_end = parsed.get("end_at")
+    if isinstance(new_end, datetime) and (event.end_at is None or new_end != event.end_at):
+        event.end_at = new_end
+        changed = True
+
+    if (not event.description) and parsed.get("description"):
+        event.description = parsed.get("description")
+        changed = True
+
+    if (not event.short_description) and parsed.get("short_description"):
+        event.short_description = parsed.get("short_description")
+        changed = True
+
+    if (not event.poster_url) and parsed.get("poster_url"):
+        event.poster_url = parsed.get("poster_url")
+        changed = True
+
+    if (not event.venue_name) and parsed.get("venue_name"):
+        event.venue_name = parsed.get("venue_name")
+        changed = True
+
+    if (not event.locality) and parsed.get("locality"):
+        event.locality = parsed.get("locality")
+        changed = True
+
+    if changed:
+        await db.flush()
+    return changed
 
 
 async def _queue_moderation(db: AsyncSession, raw_event: RawEvent, reason: str) -> None:

@@ -22,6 +22,8 @@ celery_app.autodiscover_tasks([
     "workers.tasks.pipeline",
     "workers.tasks.feeds",
     "workers.tasks.submissions",
+    "workers.tasks.discovery",
+    "workers.tasks.watchlist",
 ])
 
 # Celery Beat schedule lives here (import side-effect).

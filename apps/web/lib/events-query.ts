@@ -9,6 +9,8 @@ export function searchParamsToEventQuery(searchParams: URLSearchParams): Record<
   if (locality) o.locality = locality;
   const community = searchParams.get("community");
   if (community) o.community = community;
+  const mode = searchParams.get("mode");
+  if (mode) o.mode = mode;
   if (searchParams.get("is_free") === "true") o.is_free = true;
   if (searchParams.get("is_student_friendly") === "true") o.is_student_friendly = true;
   const page = searchParams.get("page");

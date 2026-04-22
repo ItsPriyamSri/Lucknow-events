@@ -1,5 +1,3 @@
-import axios from "axios";
-
 const DEFAULT_API_URL = "http://localhost:8000/api/v1";
 
 function resolveBaseUrl(): string {
@@ -9,20 +7,13 @@ function resolveBaseUrl(): string {
   return process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL;
 }
 
-const api = axios.create({
-  baseURL: resolveBaseUrl(),
-  headers: {
-    "Content-Type": "application/json",
-  },
-});
-
 export interface Event {
   id: string;
   slug: string;
   title: string;
   start_at: string;
   end_at: string | null;
-  venue: string | null;
+  venue_name: string | null;
   locality: string | null;
   mode: "offline" | "online" | "hybrid" | string | null;
   event_type: string | null;
@@ -56,50 +47,79 @@ export interface FacetsResponse {
   items: FacetItem[];
 }
 
-export const fetcher = (url: string) => api.get(url).then((res) => res.data);
+async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const baseUrl = resolveBaseUrl();
+  const url = `${baseUrl}${endpoint}`;
+  
+  const headers = new Headers(options.headers || {});
+  headers.set("Content-Type", "application/json");
+
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    // Add cache revalidation strategy
+    next: { revalidate: 60 }
+  });
+
+  if (!response.ok) {
+    throw new Error(`API GET Error: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+export const fetcher = async (url: string) => {
+  // fetcher is mostly used by SWR on the client side with relative paths
+  // SWR already passes the full URL from the hook
+  const prefix = url.startsWith("http") || url.startsWith("/") ? "" : resolveBaseUrl();
+  const res = await fetch(`${prefix}${url}`, {
+    headers: { "Content-Type": "application/json" }
+  });
+  if (!res.ok) throw new Error("API Error");
+  return res.json();
+};
 
 export const facetService = {
   getTopics: async (): Promise<FacetItem[]> => {
-    const { data } = await api.get<FacetsResponse>("/topics");
+    const data = await fetchApi<FacetsResponse>("/topics");
     return data.items;
   },
   getCommunities: async (): Promise<FacetItem[]> => {
-    const { data } = await api.get<FacetsResponse>("/communities");
+    const data = await fetchApi<FacetsResponse>("/communities");
     return data.items;
   },
   getLocalities: async (): Promise<FacetItem[]> => {
-    const { data } = await api.get<FacetsResponse>("/localities");
+    const data = await fetchApi<FacetsResponse>("/localities");
     return data.items;
   },
 };
 
 export const eventService = {
   getEvents: async (params?: Record<string, unknown>): Promise<EventsResponse> => {
-    const { data } = await api.get<EventsResponse>("/events", { params });
-    return data;
+    const query = params ? "?" + new URLSearchParams(params as Record<string, string>).toString() : "";
+    return fetchApi<EventsResponse>(`/events${query}`, { cache: 'no-store' }); // Always get fresh list
   },
 
   getEvent: async (slug: string): Promise<Event> => {
-    const { data } = await api.get<Event>(`/events/${slug}`);
-    return data;
+    return fetchApi<Event>(`/events/${slug}`);
   },
 
   getFeatured: async (): Promise<Event[]> => {
-    const { data } = await api.get<Event[]>("/events/featured");
-    return data;
+    return fetchApi<Event[]>("/events/featured");
   },
 
   getThisWeek: async (): Promise<Event[]> => {
-    const { data } = await api.get<Event[]>("/events/this-week");
-    return data;
+    return fetchApi<Event[]>("/events/this-week");
   },
 
   getStudentFriendly: async (): Promise<Event[]> => {
-    const { data } = await api.get<Event[]>("/events/student-friendly");
-    return data;
+    return fetchApi<Event[]>("/events/student-friendly");
   },
 
   submitEvent: async (payload: { url: string }): Promise<void> => {
-    await api.post("/submissions", { event_url: payload.url });
+    await fetchApi<void>("/submissions", {
+      method: "POST",
+      body: JSON.stringify({ event_url: payload.url }),
+    });
   },
 };

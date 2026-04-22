@@ -141,7 +141,7 @@ export default async function EventDetailPage({ params }: { params: Promise<{ sl
                       Location
                     </h3>
                     <p className="text-lg font-medium text-foreground capitalize">
-                      {event.venue || event.locality || "TBD"}
+                      {event.venue_name || event.locality || "TBD"}
                     </p>
                   </div>
                 </div>

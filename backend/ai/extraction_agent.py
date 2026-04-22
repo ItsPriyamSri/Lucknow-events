@@ -61,6 +61,22 @@ async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
 
     client = get_client()
     model = settings.GEMINI_MODEL
+
+    # Heuristic: detect JS-heavy pages that have no useful date signal.
+    # These are SPAs (Unstop, Devfolio, Commudle) that render as pure JS on the server.
+    _USEFUL_SIGNAL_KEYWORDS = ("date", "time", "april", "may", "june", "july", "august",
+                               "september", "october", "november", "december",
+                               "january", "february", "march", "2026", "2027",
+                               ":[0-9]", "starts", "ends", "register by")
+    import re
+    text_lower = inp.cleaned_text.lower()
+    has_date_signal = any(kw in text_lower for kw in _USEFUL_SIGNAL_KEYWORDS)
+    is_js_soup = (
+        not has_date_signal and
+        ("window." in inp.cleaned_text or "@font-face" in inp.cleaned_text or
+         "var " in inp.cleaned_text or len(inp.cleaned_text) > 5000)
+    )
+
     user_prompt = (
         f"Source platform: {inp.source_platform}\n"
         f"Page URL: {inp.page_url}\n"
@@ -69,11 +85,42 @@ async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
         "Extract the event data as JSON."
     )
 
+    if is_js_soup:
+        # The scraped text is JS boilerplate — use Google Search Grounding to
+        # retrieve accurate event details (especially the real date/time).
+        from google.genai import types
+        grounded_prompt = (
+            f"Look up this specific event page on the web and extract structured event details: {inp.page_url}\n"
+            f"Partial data already known: {inp.partial_hints}\n"
+            "Find the exact event date, time, venue, description, and registration details. "
+            "Return the event data as JSON."
+        )
+        try:
+            resp = await client.aio.models.generate_content(
+                model=model,
+                contents=grounded_prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    response_mime_type="application/json",
+                    response_json_schema=GeminiExtractionOutput.model_json_schema(),
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.1,
+                ),
+            )
+            result = GeminiExtractionOutput.model_validate_json(resp.text)
+            # Only use the grounded result if it actually got a date
+            if result.start_at and not result.not_an_event:
+                return result
+            # Fall through to standard extraction if grounding didn't help
+        except Exception as exc:
+            import structlog
+            structlog.get_logger(__name__).warning("extraction.grounding_fallback_failed", error=str(exc))
+
     try:
         resp = await client.aio.models.generate_content(
             model=model,
             contents=user_prompt,
-            config=json_config(GeminiExtractionOutput).model_copy(update={"system_instruction": SYSTEM_PROMPT}),
+            config=json_config(GeminiExtractionOutput, system_instruction=SYSTEM_PROMPT),
         )
         # SDK returns parsed JSON in resp.parsed when response_json_schema is used.
         parsed = getattr(resp, "parsed", None)
@@ -102,7 +149,7 @@ def _mock_extract(inp: ExtractionInput) -> GeminiExtractionOutput:
     text = inp.cleaned_text or ""
     # Title: look for a labeled title-ish phrase.
     title = None
-    m = re.search(r"(?:^|\\n)\\s*(?:event|title)\\s*[:\\-]\\s*(.+)", text, re.IGNORECASE)
+    m = re.search(r"(?:^|\n)\s*(?:event|title)\s*[:\-]\s*(.+)", text, re.IGNORECASE)
     if m:
         title = m.group(1).strip()[:200]
     if not title:
@@ -114,7 +161,7 @@ def _mock_extract(inp: ExtractionInput) -> GeminiExtractionOutput:
                 break
 
     # URLs
-    urls = re.findall(r"https?://\\S+", text)
+    urls = re.findall(r"https?://\S+", text)
     reg_url = None
     for u in urls:
         if any(k in u.lower() for k in ("register", "rsvp", "tickets", "ticket", "signup")):
@@ -124,7 +171,7 @@ def _mock_extract(inp: ExtractionInput) -> GeminiExtractionOutput:
         reg_url = urls[0].rstrip(").,]")
 
     # Basic city heuristic
-    city = "Lucknow" if re.search(r"\\blacknow\\b", text, re.IGNORECASE) else None
+    city = "Lucknow" if re.search(r"\blucknow\b", text, re.IGNORECASE) else None
 
     not_an_event = False
     confidence = 0.35

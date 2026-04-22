@@ -26,7 +26,7 @@ services:
 
   worker:
     build: ../backend
-    command: celery -A workers.celery_app worker --loglevel=info -c 4
+    command: celery -A workers.celery_app worker --loglevel=info -c 8
     volumes:
       - ../backend:/app:z
       - ../data:/app/data:z

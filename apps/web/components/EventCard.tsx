@@ -45,6 +45,11 @@ export function EventCard({ event }: { event: Event }) {
           )}
         </div>
         
+        {event.community_name && (
+          <div className="flex items-center gap-2 mb-1 text-xs font-bold text-primary/80 uppercase tracking-wider">
+            <span className="truncate">{event.community_name}</span>
+          </div>
+        )}
         <Link href={`/events/${event.slug}`} className="mb-2 text-lg font-bold leading-tight text-foreground line-clamp-2 hover:text-primary transition-colors hover:underline" title={event.title}>
           {event.title}
         </Link>
@@ -57,10 +62,27 @@ export function EventCard({ event }: { event: Event }) {
           <div className="flex items-center gap-2">
             <MapPin className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">
-              {event.mode === 'online' ? 'Online' : event.venue || event.locality || 'TBD'}
+              {event.mode === "online"
+                ? "Online"
+                : [event.venue_name, event.locality, event.city].filter(Boolean).join(", ") || "TBD"}
             </span>
           </div>
         </div>
+        
+        {event.topics && event.topics.length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            {event.topics.slice(0, 3).map((topic, i) => (
+              <span key={i} className="inline-flex items-center rounded-md bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                {topicLabel(topic)}
+              </span>
+            ))}
+            {event.topics.length > 3 && (
+              <span className="inline-flex items-center rounded-md bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
+                +{event.topics.length - 3}
+              </span>
+            )}
+          </div>
+        )}
         
         <div className="mt-auto pt-4 flex gap-2 w-full justify-between items-center border-t border-border/50">
           <a

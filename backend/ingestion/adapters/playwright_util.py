@@ -1,122 +1,174 @@
-"""Shared Playwright / HTTP helpers for listing adapters."""
+"""Shared Playwright utilities for all scrapers.
 
+Key helpers:
+  playwright_render(url) – render a page and return its HTML
+  playwright_fetch_html(url) – alias for playwright_render
+  playwright_intercept_json(url, match_pattern) – capture an XHR/fetch JSON response
+"""
 from __future__ import annotations
 
-import random
+import asyncio
 import re
-from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urljoin, urlparse
 
 import structlog
 
 log = structlog.get_logger(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0.0.0 Safari/537.36 LucknowTechEventsBot/0.1"
-)
+USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
 
 
-async def playwright_render(url: str) -> str:
-    """Render page and return visible text; falls back to httpx HTML on failure."""
+# Default timeouts (ms)
+_NAVIGATION_TIMEOUT_MS = 60_000
+_NETWORK_IDLE_TIMEOUT_MS = 30_000
+
+
+def _apply_stealth(page: Any) -> None:
+    """Apply playwright-stealth if available; silently skip if not installed."""
     try:
-        from playwright.async_api import async_playwright
+        from playwright_stealth import stealth_sync  # type: ignore
+        stealth_sync(page)
+    except ImportError:
+        pass
+    except Exception as exc:
+        log.debug("playwright_stealth.apply_failed", error=str(exc))
 
-        async with async_playwright() as p:
-            import asyncio
 
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
+async def _apply_stealth_async(page: Any) -> None:
+    """Async version of stealth application."""
+    try:
+        from playwright_stealth import stealth_async  # type: ignore
+        await stealth_async(page)
+    except ImportError:
+        pass
+    except Exception as exc:
+        log.debug("playwright_stealth.apply_async_failed", error=str(exc))
+
+
+async def playwright_render(url: str, *, wait_for: str = "networkidle") -> str:
+    """
+    Render a URL using Playwright Chromium and return the page HTML.
+
+    Args:
+        url: Target URL.
+        wait_for: Playwright waitUntil strategy ("networkidle", "load", "domcontentloaded").
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+        )
+        page = await ctx.new_page()
+        await _apply_stealth_async(page)
+
+        try:
+            await page.goto(url, wait_until=wait_for, timeout=_NAVIGATION_TIMEOUT_MS)
+        except Exception:
+            # Fallback: just wait for load if networkidle times out
             try:
-                ctx = await browser.new_context(user_agent=USER_AGENT)
-                page = await ctx.new_page()
+                await page.wait_for_load_state("load", timeout=_NETWORK_IDLE_TIMEOUT_MS)
+            except Exception:
+                pass
 
-                await asyncio.sleep(random.uniform(0.5, 2.0))
-
-                async def _render() -> str:
-                    # "networkidle" can hang on heavily dynamic pages; prefer a safer default.
-                    try:
-                        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                    except Exception:
-                        await page.goto(url, timeout=45_000)
-                    return await page.inner_text("body")
-
-                # Hard cap total render time so crawls can't get stuck "running" forever.
-                return await asyncio.wait_for(_render(), timeout=70)
-            finally:
-                await browser.close()
-    except Exception as exc:
-        log.warning("playwright.render_failed", url=url, error=str(exc))
-        return await httpx_fetch_text(url)
+        html = await page.content()
+        await browser.close()
+    return html
 
 
-async def playwright_fetch_html(url: str, *, post_load_wait_ms: int = 0) -> str:
-    """Render page and return HTML (`page.content()`); falls back to httpx on failure."""
-    try:
-        from playwright.async_api import async_playwright
+# Backwards-compat alias
+playwright_fetch_html = playwright_render
 
-        async with async_playwright() as p:
-            import asyncio
 
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
+async def playwright_intercept_json(
+    url: str,
+    *,
+    match_pattern: str | None = None,
+    wait_for_selector: str | None = None,
+    scroll_to_bottom: bool = False,
+    extra_wait_ms: int = 2000,
+) -> tuple[str, dict[str, Any] | list[Any] | None]:
+    """
+    Navigate to ``url`` and capture the first XHR/fetch JSON response whose URL
+    matches ``match_pattern`` (regex). Also returns the final page HTML.
+
+    Returns:
+        (page_html, captured_json_or_None)
+    """
+    import json as _json
+
+    from playwright.async_api import async_playwright
+
+    captured: dict[str, Any] | list[Any] | None = None
+    captured_event = asyncio.Event()
+
+    pattern = re.compile(match_pattern) if match_pattern else None
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        ctx = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        page = await ctx.new_page()
+        await _apply_stealth_async(page)
+
+        async def on_response(response: Any) -> None:
+            nonlocal captured
+            if captured_event.is_set():
+                return
+            resp_url = response.url
+            ctype = response.headers.get("content-type", "")
+            if "json" not in ctype:
+                return
+            if pattern and not pattern.search(resp_url):
+                return
             try:
-                ctx = await browser.new_context(user_agent=USER_AGENT)
-                page = await ctx.new_page()
+                body = await response.json()
+                captured = body
+                captured_event.set()
+            except Exception:
+                pass
 
-                await asyncio.sleep(random.uniform(0.5, 2.0))
+        page.on("response", on_response)
 
-                async def _render() -> str:
-                    try:
-                        await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                    except Exception:
-                        await page.goto(url, timeout=45_000)
-                    if post_load_wait_ms:
-                        await page.wait_for_timeout(post_load_wait_ms)
-                    return await page.content()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=_NAVIGATION_TIMEOUT_MS)
+        except Exception:
+            pass
 
-                return await asyncio.wait_for(_render(), timeout=70)
-            finally:
-                await browser.close()
-    except Exception as exc:
-        log.warning("playwright.html_failed", url=url, error=str(exc))
-        return await httpx_fetch_text(url)
+        if wait_for_selector:
+            try:
+                await page.wait_for_selector(wait_for_selector, timeout=10_000)
+            except Exception:
+                pass
 
+        if scroll_to_bottom:
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1)
 
-async def httpx_fetch_text(url: str) -> str:
-    import httpx
+        # Wait up to extra_wait_ms for the JSON response to be intercepted
+        try:
+            await asyncio.wait_for(captured_event.wait(), timeout=extra_wait_ms / 1000)
+        except asyncio.TimeoutError:
+            pass
 
-    try:
-        async with httpx.AsyncClient(timeout=45, headers={"User-Agent": USER_AGENT}) as client:
-            r = await client.get(url, follow_redirects=True)
-            return r.text
-    except Exception as exc:
-        log.error("httpx.fetch_failed", url=url, error=str(exc))
-        return ""
+        html = await page.content()
+        await browser.close()
 
-
-def unique_hrefs(html: str, base: str, pattern: re.Pattern[str], *, limit: int) -> list[str]:
-    """Extract absolute unique URLs matching regex from HTML."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in pattern.finditer(html):
-        href = m.group(1)
-        if href.startswith("//"):
-            href = "https:" + href
-        abs_url = href if href.startswith("http") else urljoin(base, href)
-        if abs_url in seen:
-            continue
-        seen.add(abs_url)
-        out.append(abs_url)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def same_domain(url: str, allowed: str) -> bool:
-    return urlparse(url).netloc.endswith(allowed)
+    return html, captured

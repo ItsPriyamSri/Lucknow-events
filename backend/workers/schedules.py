@@ -15,5 +15,13 @@ CELERYBEAT_SCHEDULE = {
         "task": "workers.tasks.crawl.expire_past_events",
         "schedule": crontab(hour=3, minute=0),
     },
+    "auto-discover-events": {
+        "task": "workers.tasks.discovery.auto_discover_events",
+        "schedule": crontab(hour="*/3", minute=0),
+    },
+    "refresh-watchlist-sources": {
+        "task": "workers.tasks.watchlist.refresh_watchlist_sources",
+        "schedule": crontab(hour="*/3", minute=15),
+    },
 }
 

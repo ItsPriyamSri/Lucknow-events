@@ -50,7 +50,7 @@ async def classify_event(inp: ClassificationInput) -> GeminiClassificationOutput
         resp = await client.aio.models.generate_content(
             model=model,
             contents=str(user_prompt),
-            config=json_config(GeminiClassificationOutput).model_copy(update={"system_instruction": SYSTEM_PROMPT}),
+            config=json_config(GeminiClassificationOutput, system_instruction=SYSTEM_PROMPT),
         )
         parsed = getattr(resp, "parsed", None)
         if parsed is not None:
@@ -71,11 +71,11 @@ def _mock_classify(inp: ClassificationInput) -> GeminiClassificationOutput:
 
     text = (inp.title or "") + "\n" + (inp.description or "")
     topics: list[str] = []
-    if re.search(r"\\bpython\\b", text, re.IGNORECASE):
+    if re.search(r"\bpython\b", text, re.IGNORECASE):
         topics.append("python")
-    if re.search(r"\\bjavascript\\b|\\bjs\\b|\\breact\\b", text, re.IGNORECASE):
+    if re.search(r"\bjavascript\b|\bjs\b|\breact\b", text, re.IGNORECASE):
         topics.append("javascript")
-    if re.search(r"\\bai\\b|\\bml\\b|machine learning", text, re.IGNORECASE):
+    if re.search(r"\bai\b|\bml\b|machine learning", text, re.IGNORECASE):
         topics.append("ai")
 
     event_type = "meetup"
@@ -91,7 +91,6 @@ def _mock_classify(inp: ClassificationInput) -> GeminiClassificationOutput:
         topics=topics[:5],
         audience=[],
         is_student_friendly=bool(re.search(r"student", text, re.IGNORECASE)),
-        lucknow_relevance_score=0.7 if re.search(r"\\blacknow\\b", text, re.IGNORECASE) else 0.4,
+        lucknow_relevance_score=0.7 if re.search(r"\blucknow\b", text, re.IGNORECASE) else 0.4,
         confidence=0.4,
     )
-

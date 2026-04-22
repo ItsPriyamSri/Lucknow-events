@@ -16,7 +16,7 @@ export function EventJsonLd({ event, siteUrl }: { event: Event; siteUrl: string 
     eventStatus: "https://schema.org/EventScheduled",
     location: {
       "@type": event.mode === "online" ? "VirtualLocation" : "Place",
-      name: event.venue || event.locality || "Lucknow",
+      name: event.venue_name || event.locality || "Lucknow",
       url: event.mode === "online" ? event.registration_url : undefined,
     },
     image: event.poster_url ? [event.poster_url] : undefined,

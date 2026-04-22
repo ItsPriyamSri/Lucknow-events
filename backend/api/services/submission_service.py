@@ -33,7 +33,7 @@ async def create_submission(
 
         celery_app.send_task(
             "workers.tasks.submissions.process_manual_submission",
-            args=[str(submission.id)],
+            args=[str(submission.id), event_url],
         )
     except Exception:
         # If celery isn't running, keep it queued so it can be retried later.
