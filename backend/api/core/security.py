@@ -3,20 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt  # noqa: F401 (JWTError re-exported for callers)
-from passlib.context import CryptContext
+import bcrypt
 
 from api.core.config import settings
 
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_ctx.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode('utf-8'), hashed.encode('utf-8'))
+    except Exception:
+        return False
 
 
 def hash_password(plain: str) -> str:
-    return _pwd_ctx.hash(plain)
+    return bcrypt.hashpw(plain.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:

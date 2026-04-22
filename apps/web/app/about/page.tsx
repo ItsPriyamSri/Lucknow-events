@@ -1,5 +1,6 @@
 import { Telescope, Globe, Calendar, Mail, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { ComingSoonButton } from "@/components/ComingSoonButton";
 
 export default function AboutPage() {
   return (
@@ -11,7 +12,7 @@ export default function AboutPage() {
         </div>
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight">About This Project</h1>
         <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-          Lucknow Tech Events is a community-driven aggregator that automatically discovers and indexes tech events happening across Lucknow and Uttar Pradesh.
+          Lucknow Tech Events is a community-driven aggregator that automatically discovers and indexes tech events happening across Lucknow and Uttar Pradesh. This project comes under UPAI labs.
         </p>
       </section>
 
@@ -24,18 +25,18 @@ export default function AboutPage() {
           {[
             {
               step: "1",
-              title: "Automatic Discovery",
-              description: "A Playwright-based scraper crawls community pages (GDG, Commudle, Devfolio, Unstop) on a schedule every 6 hours."
+              title: "Smart Discovery",
+              description: "Our AI agents automatically search the web every few hours to find the latest tech events happening around Lucknow."
             },
             {
               step: "2",
-              title: "AI Extraction",
-              description: "Raw pages pass through Gemini Flash agents that extract structured event data: dates, venue, topics, registration links — even from messy HTML."
+              title: "Community Submissions",
+              description: "When you submit an event link, our system quickly verifies it to make sure it's legitimate before adding it to the list."
             },
             {
               step: "3",
-              title: "Curated Feed",
-              description: "Events are normalized, deduplicated, scored for Lucknow relevance, and published — then available via our REST API and calendar feeds."
+              title: "Unified View",
+              description: "We bring all these events together in one easy-to-use place, so you can quickly find and register for your favorite tech meetups."
             },
           ].map(({ step, title, description }) => (
             <div key={step} className="flex flex-col gap-3 bg-card rounded-xl border border-border p-6">
@@ -71,22 +72,12 @@ export default function AboutPage() {
           All event data is freely available via open feeds. Subscribe to our calendar or consume the JSON API to power your own applications.
         </p>
         <div className="flex flex-wrap gap-4">
-          <a
-            href="/api/v1/feeds/events.ics"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-border bg-card rounded-full px-5 py-2.5 text-sm font-medium hover:border-primary/50 hover:text-primary transition-colors"
-          >
+          <ComingSoonButton className="flex items-center gap-2 border border-border bg-card rounded-full px-5 py-2.5 text-sm font-medium hover:border-primary/50 hover:text-primary transition-colors">
             <Calendar className="w-4 h-4" /> Subscribe to ICS Calendar
-          </a>
-          <a
-            href="/api/v1/feeds/events.json"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 border border-border bg-card rounded-full px-5 py-2.5 text-sm font-medium hover:border-primary/50 hover:text-primary transition-colors"
-          >
+          </ComingSoonButton>
+          <ComingSoonButton className="flex items-center gap-2 border border-border bg-card rounded-full px-5 py-2.5 text-sm font-medium hover:border-primary/50 hover:text-primary transition-colors">
             <Globe className="w-4 h-4" /> JSON Event Dataset
-          </a>
+          </ComingSoonButton>
         </div>
       </section>
 

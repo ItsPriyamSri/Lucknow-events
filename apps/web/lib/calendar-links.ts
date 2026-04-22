@@ -20,7 +20,7 @@ export function googleCalendarTemplateUrl(event: Event): string {
   const location =
     event.mode === "online"
       ? "Online"
-      : [event.venue, event.locality].filter(Boolean).join(", ") || "Lucknow, India";
+      : [event.venue_name, event.locality].filter(Boolean).join(", ") || "Lucknow, India";
   const details = [event.short_description, event.canonical_url].filter(Boolean).join("\n\n");
   const params = new URLSearchParams({
     action: "TEMPLATE",

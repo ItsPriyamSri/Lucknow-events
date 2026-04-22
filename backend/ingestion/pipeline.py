@@ -195,6 +195,16 @@ async def _process_raw_event(
     parsed, confidence = _deterministic_parse(raw, source.platform or "")
     raw_event.extraction_confidence = confidence
 
+    # ── Step 4a: page-type guardrail (reduce false events) ─────────────
+    # If this URL doesn't look like a single event detail page, don't let it
+    # flow through to publishing.
+    page_kind = _classify_generic_page(raw, source_url)
+    if page_kind != "detail":
+        await _queue_moderation(db, raw_event, f"url_{page_kind}")
+        raw_event.pipeline_status = "moderation"
+        await db.commit()
+        return {"new": 1, "queued": 1}
+
     _AI_EXTRACT_PLATFORMS = frozenset({"generic", "meetup", "commudle", "devfolio", "unstop"})
     needs_ai_extract = confidence < 0.60 or (
         (source.platform or "") in _AI_EXTRACT_PLATFORMS and bool(raw.get("_cleaned_text"))
@@ -214,7 +224,13 @@ async def _process_raw_event(
     parsed["locality"] = normalize_locality(parsed.get("locality"))
     parsed["start_at"] = parse_datetime(parsed.get("start_at"))
     parsed["end_at"] = parse_datetime(parsed.get("end_at"))
-    parsed["description"] = clean_text(parsed.get("description") or "")
+    # Keep description as None if empty after cleaning (avoid publishing blank strings).
+    _desc_raw = parsed.get("description")
+    if _desc_raw:
+        _desc_clean = clean_text(str(_desc_raw))
+        parsed["description"] = _desc_clean if _desc_clean.strip() else None
+    else:
+        parsed["description"] = None
     parsed["canonical_url"] = ensure_absolute_url(parsed.get("canonical_url") or source_url, source.base_url)
     parsed["registration_url"] = ensure_absolute_url(
         parsed.get("registration_url") or parsed.get("canonical_url") or source_url,
@@ -246,6 +262,14 @@ async def _process_raw_event(
         log.debug("pipeline.junk_title_rejected", title=str(parsed.get("title", ""))[:120])
         await db.commit()
         return {}
+
+    # ── Step 6c: require a real start date/time before publishing ──────
+    # Missing dates are the #1 source of "soup" (events silently get bogus dates).
+    if parsed.get("start_at") is None:
+        await _queue_moderation(db, raw_event, "missing_start_at")
+        raw_event.pipeline_status = "moderation"
+        await db.commit()
+        return {"new": 1, "queued": 1}
 
     # ── Step 7: deduplicate ───────────────────────────────────────────
     dup = await find_duplicate(
@@ -321,6 +345,92 @@ _JUNK_TITLE_RE = __import__("re").compile(
     r"^(?:\{|\[|\.site-nav|\.nav-|function\s|\(function|\.site-|var |-webkit-|\*\s*\{)",
     __import__("re").IGNORECASE,
 )
+
+def _classify_generic_page(raw: dict[str, Any], url: str) -> str:
+    """
+    Heuristic classifier to block obvious non-event pages from being treated as a single event.
+
+    Returns: "detail" | "listing" | "noise"
+    """
+    # 1) JSON-LD Event is the strongest detail-page signal.
+    json_ld = raw.get("_json_ld")
+    if isinstance(json_ld, str) and _json_ld_contains_event(json_ld):
+        return "detail"
+
+    # 2) URL patterns (fast + high precision)
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower().rstrip("/")
+    except Exception:
+        host = ""
+        path = (url or "").lower()
+
+    # Known detail-ish patterns
+    if "lu.ma" in host and path.count("/") == 1 and len(path) > 2:
+        return "detail"
+    if "gdg.community.dev" in host and "/events/details/" in path:
+        return "detail"
+    if "commudle.com" in host and "/events/" in path and "/communities/" in path:
+        return "detail"
+    if "unstop.com" in host and ("/hackathons/" in path or "/competitions/" in path):
+        # Unstop has lots of listing pages too; prefer explicit slugs.
+        return "detail" if path.count("/") >= 3 else "listing"
+    if "meetup.com" in host and "/events/" in path:
+        return "detail"
+
+    # Known listing/noise patterns
+    if "gdg.community.dev" in host and "/events/details/" not in path:
+        return "listing"
+    if "meetup.com" in host and "/events/" not in path:
+        return "listing"
+    if "community.cncf.io" in host:
+        return "listing"
+    if "commudle.com" in host and "/events/" not in path:
+        return "listing"
+    if "fossunited.org" in host and (path == "/c/lucknow" or path.startswith("/c/")):
+        # Community chapter pages are listings; individual event pages use /c/<city>/<year> etc.
+        return "listing" if path.count("/") <= 2 else "detail"
+
+    # 3) fallback: if we have very little text, treat as noise
+    cleaned = raw.get("_cleaned_text")
+    if isinstance(cleaned, str) and len(cleaned.strip()) < 200:
+        return "noise"
+
+    # Default to detail to avoid blocking unknown platforms.
+    return "detail"
+
+
+def _json_ld_contains_event(json_ld: str) -> bool:
+    import json
+
+    def _has_event(obj: Any) -> bool:
+        if isinstance(obj, dict):
+            t = obj.get("@type")
+            if t == "Event":
+                return True
+            if isinstance(t, list) and any(x == "Event" for x in t):
+                return True
+            graph = obj.get("@graph")
+            if isinstance(graph, list) and any(_has_event(x) for x in graph):
+                return True
+            return any(_has_event(v) for v in obj.values())
+        if isinstance(obj, list):
+            return any(_has_event(x) for x in obj)
+        return False
+
+    # Generic adapter may concatenate multiple JSON-LD blocks with separators.
+    parts = [p.strip() for p in str(json_ld).split("\n\n") if p.strip()]
+    for part in parts[:6]:
+        try:
+            data = json.loads(part)
+        except Exception:
+            continue
+        if _has_event(data):
+            return True
+    return False
 
 
 def _is_valid_title(title: Any) -> bool:
@@ -488,13 +598,19 @@ async def _publish_event(
     end_at = parsed.get("end_at")
     expires_at = (end_at + timedelta(hours=48)) if isinstance(end_at, datetime) else None
 
+    if not isinstance(start_at, datetime):
+        raise ValueError("Refusing to publish event without start_at")
+
     event = Event(
         id=str(uuid.uuid4()),
         slug=slug,
         title=title,
         description=parsed.get("description"),
-        short_description=parsed.get("short_description") or (parsed.get("description") or "")[:500] or None,
-        start_at=start_at if isinstance(start_at, datetime) else datetime(2099, 12, 31, tzinfo=timezone.utc),
+        short_description=(
+            parsed.get("short_description")
+            or ((parsed.get("description") or "")[:500] if parsed.get("description") else None)
+        ),
+        start_at=start_at,
         end_at=end_at,
         city=parsed.get("city") or "Lucknow",
         locality=parsed.get("locality"),
@@ -541,6 +657,9 @@ async def _maybe_refresh_existing_event(db: AsyncSession, event: Event, parsed: 
                 looks_defaulted = abs((event.start_at - event.published_at).total_seconds()) < 120
             except Exception:
                 looks_defaulted = False
+        # Also treat far-future sentinel dates as defaulted (historical bug).
+        if event.start_at and getattr(event.start_at, "year", 0) >= 2090:
+            looks_defaulted = True
 
         # Only overwrite if existing looks defaulted OR if new start differs materially (>= 6h).
         materially_different = abs((event.start_at - new_start).total_seconds()) >= 6 * 3600

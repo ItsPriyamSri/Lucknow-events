@@ -1,6 +1,7 @@
-import { eventService, Event } from "@/lib/api";
+import { eventService, type Event } from "@/lib/api";
 import { CalendarDays, MapPin, Clock } from "lucide-react";
 import Link from "next/link";
+import { ComingSoonButton } from "@/components/ComingSoonButton";
 
 export const revalidate = 300;
 
@@ -77,14 +78,9 @@ export default async function CalendarPage() {
             <p className="text-sm font-semibold text-muted-foreground mt-1">Upcoming events mapped sequentially</p>
           </div>
         </div>
-        <a
-          href={ICS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-bold hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all shadow-sm"
-        >
+        <ComingSoonButton className="flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-bold hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all shadow-sm">
           <CalendarDays className="w-4 h-4" /> Subscribe (.ics)
-        </a>
+        </ComingSoonButton>
       </div>
 
       {grouped.length === 0 ? (
@@ -165,12 +161,14 @@ export default async function CalendarPage() {
 
                           {/* Info Column */}
                           <div className="flex-1 min-w-0">
-                            <Link
-                              href={`/events/${event.slug}`}
+                            <a
+                              href={registerUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
                               className="text-lg font-bold text-foreground group-hover:text-primary transition-colors block truncate pr-4"
                             >
                               {event.title}
-                            </Link>
+                            </a>
                             <div className="flex flex-wrap items-center gap-y-1 gap-x-3 mt-1.5 text-xs font-semibold text-muted-foreground">
                               <span className="flex items-center gap-1 text-foreground/70">
                                 <MapPin className="w-3.5 h-3.5 flex-shrink-0" />

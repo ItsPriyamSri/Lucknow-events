@@ -19,6 +19,8 @@ class Source(Base):
     platform: Mapped[str | None] = mapped_column(String(50))
     base_url: Mapped[str] = mapped_column(Text, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # status: active (default), whitelisted (always crawled, high trust), blacklisted (never crawled)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="active")
     crawl_strategy: Mapped[str | None] = mapped_column(String(50))
     config_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default="{}")
     crawl_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, server_default="6")
@@ -35,4 +37,5 @@ class Source(Base):
 
     raw_events = relationship("RawEvent", back_populates="source")
     crawl_runs = relationship("CrawlRun", back_populates="source")
+
 

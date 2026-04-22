@@ -68,6 +68,12 @@ class GenericAdapter(BaseAdapter):
         text = text[:MAX_EXTRACTION_CHARS]
 
         raw: dict[str, Any] = {"_cleaned_text": text, "canonical_url": page.url}
+        # Preserve structured signals so the pipeline can classify pages
+        # (detail vs listing/noise) without relying entirely on the LLM output.
+        if meta_desc:
+            raw["_meta_description"] = meta_desc
+        if json_ld:
+            raw["_json_ld"] = json_ld
         if poster_url:
             raw["poster_url"] = poster_url
         return [raw]

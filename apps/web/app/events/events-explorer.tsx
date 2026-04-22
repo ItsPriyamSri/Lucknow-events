@@ -55,8 +55,6 @@ export function EventsExplorer() {
     locality: searchParams.get("locality") ?? undefined,
     community: searchParams.get("community") ?? undefined,
     mode: searchParams.get("mode") ?? undefined,
-    is_free: searchParams.get("is_free") === "true" ? "true" : undefined,
-    is_student_friendly: searchParams.get("is_student_friendly") === "true" ? "true" : undefined,
   };
 
   const hasActiveFilters =
@@ -65,9 +63,7 @@ export function EventsExplorer() {
       filterBase.topic ||
       filterBase.locality ||
       filterBase.community ||
-      filterBase.mode ||
-      filterBase.is_free ||
-      filterBase.is_student_friendly
+      filterBase.mode
     ) ||
     (searchParams.get("page") && Number(searchParams.get("page")) > 1);
 
@@ -99,12 +95,6 @@ export function EventsExplorer() {
     });
   };
 
-  const toggleBoolParam = (name: "is_free" | "is_student_friendly", checked: boolean) => {
-    replaceQuery((sp) => {
-      if (checked) sp.set(name, "true");
-      else sp.delete(name);
-    });
-  };
 
   const prevHref =
     page > 1 ? buildEventsHref(filterBase, { page: page > 2 ? String(page - 1) : null }) : null;
@@ -147,7 +137,7 @@ export function EventsExplorer() {
                   className="appearance-none h-10 rounded-full border border-border bg-card py-2 pl-10 pr-8 text-sm font-bold hover:bg-muted/50 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary shadow-sm transition-all cursor-pointer min-w-[140px]"
                 >
                   <option value="">Any Topic</option>
-                  {topics.map((t) => (
+                  {topics.filter((t) => t.count && t.count > 0).map((t) => (
                     <option key={t.name} value={t.name}>
                       {t.name}
                     </option>
@@ -220,45 +210,8 @@ export function EventsExplorer() {
             </div>
           </div>
 
-          {/* Secondary Filter Row (Checkboxes) */}
-          <div className="flex items-center justify-between mt-4">
-            <div className="flex items-center gap-6 overflow-x-auto scrollbar-hide pb-1">
-              <label className="flex items-center gap-2.5 cursor-pointer group flex-shrink-0">
-                <div className="relative flex items-center justify-center">
-                  <input
-                    type="checkbox"
-                    checked={searchParams.get("is_free") === "true"}
-                    onChange={(e) => toggleBoolParam("is_free", e.target.checked)}
-                    className="peer appearance-none w-4 h-4 rounded border border-border bg-card checked:bg-primary checked:border-primary transition-all cursor-pointer"
-                  />
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 peer-checked:opacity-100 peer-checked:text-primary-foreground pointer-events-none transition-opacity">
-                    <svg className="w-2.5 h-2.5" viewBox="0 0 12 10" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M1 5L4.5 8.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </div>
-                </div>
-                <span className="text-[13px] font-bold text-muted-foreground group-hover:text-foreground transition-colors">Free Events Only</span>
-              </label>
-              
-              <label className="flex items-center gap-2.5 cursor-pointer group flex-shrink-0">
-                <div className="relative flex items-center justify-center">
-                  <input
-                    type="checkbox"
-                    checked={searchParams.get("is_student_friendly") === "true"}
-                    onChange={(e) => toggleBoolParam("is_student_friendly", e.target.checked)}
-                    className="peer appearance-none w-4 h-4 rounded border border-border bg-card checked:bg-primary checked:border-primary transition-all cursor-pointer"
-                  />
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 peer-checked:opacity-100 peer-checked:text-primary-foreground pointer-events-none transition-opacity">
-                    <svg className="w-2.5 h-2.5" viewBox="0 0 12 10" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M1 5L4.5 8.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </div>
-                </div>
-                <span className="text-[13px] font-bold text-muted-foreground group-hover:text-foreground transition-colors">Student Friendly</span>
-              </label>
-            </div>
-
-            <div className="flex items-center gap-4 flex-shrink-0">
+          <div className="flex items-center justify-end mt-4">
+            <div className="flex items-center gap-4">
               {hasActiveFilters && (
                 <button
                   type="button"
@@ -268,7 +221,6 @@ export function EventsExplorer() {
                   Clear Filters
                 </button>
               )}
-              {/* Optional: Add a "Sort by" dropdown if API supports it in the future, right now just showing results count */}
               <div className="flex items-center gap-2">
                 {isValidating && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
                 <span className="text-[13px] font-bold text-muted-foreground uppercase tracking-wider">{total} results</span>
@@ -292,7 +244,7 @@ export function EventsExplorer() {
           <>
             {/* Extended grid layout mapping on extra large screens: up to 5 cols! */}
             <div
-              className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6 transition-opacity duration-300 ${isValidating ? "opacity-60" : "opacity-100"}`}
+              className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 transition-opacity duration-300 ${isValidating ? "opacity-60" : "opacity-100"}`}
             >
               {items.map((event) => (
                 <EventCard key={event.id} event={event} />

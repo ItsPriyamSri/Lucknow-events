@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-# ─── Auth ────────────────────────────────────────────────────────────────────
+# ─── Auth ─────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     email: str
@@ -18,7 +18,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
-# ─── Sources ─────────────────────────────────────────────────────────────────
+# ─── Sources ──────────────────────────────────────────────────────────────────
 
 class SourceOut(BaseModel):
     id: str
@@ -26,6 +26,7 @@ class SourceOut(BaseModel):
     platform: str | None
     base_url: str
     enabled: bool
+    status: str  # active | whitelisted | blacklisted
     crawl_strategy: str | None
     trust_score: float
     crawl_interval_hours: int
@@ -50,12 +51,77 @@ class SourceCreate(BaseModel):
 
 class SourcePatch(BaseModel):
     enabled: bool | None = None
+    status: str | None = None  # active | whitelisted | blacklisted
     trust_score: float | None = None
     crawl_interval_hours: int | None = None
     config_json: dict[str, Any] | None = None
 
 
-# ─── Moderation ──────────────────────────────────────────────────────────────
+class SourceStatusUpdate(BaseModel):
+    status: str  # active | whitelisted | blacklisted
+
+
+# ─── Events (admin) ───────────────────────────────────────────────────────────
+
+class AdminEventOut(BaseModel):
+    id: str
+    slug: str
+    title: str
+    start_at: datetime
+    end_at: datetime | None
+    mode: str | None
+    event_type: str | None
+    city: str | None
+    locality: str | None
+    venue: str | None = Field(default=None, validation_alias="venue_name")
+    community_name: str | None
+    canonical_url: str
+    registration_url: str | None
+    is_featured: bool
+    is_cancelled: bool
+    is_free: bool
+    published_at: datetime | None
+    expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AdminEventListResponse(BaseModel):
+    items: list[AdminEventOut]
+    page: int
+    limit: int
+    total: int
+
+
+class EventUpdate(BaseModel):
+    """Admin-only full event update."""
+    title: str | None = None
+    description: str | None = None
+    short_description: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str | None = None
+    city: str | None = None
+    locality: str | None = None
+    venue_name: str | None = None
+    address: str | None = None
+    mode: str | None = None
+    event_type: str | None = None
+    organizer_name: str | None = None
+    community_name: str | None = None
+    canonical_url: str | None = None
+    registration_url: str | None = None
+    poster_url: str | None = None
+    price_type: str | None = None
+    is_free: bool | None = None
+    is_featured: bool | None = None
+    is_cancelled: bool | None = None
+
+
+# ─── Moderation ───────────────────────────────────────────────────────────────
 
 class ModerationItemOut(BaseModel):
     id: str
@@ -79,9 +145,10 @@ class StatsOut(BaseModel):
     events_this_week: int
     pending_moderation: int
     sources_active: int
+    sources_blacklisted: int = 0
 
 
-# ─── Crawl runs ──────────────────────────────────────────────────────────────
+# ─── Crawl runs ───────────────────────────────────────────────────────────────
 
 class CrawlRunOut(BaseModel):
     id: str
@@ -97,3 +164,15 @@ class CrawlRunOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ─── Discovery ────────────────────────────────────────────────────────────────
+
+class DiscoveryRunRequest(BaseModel):
+    custom_queries: list[str] | None = None
+
+
+class DiscoveryRunResult(BaseModel):
+    task_id: str
+    status: str = "queued"
+    message: str = "Discovery agent has been triggered"

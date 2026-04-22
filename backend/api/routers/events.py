@@ -26,7 +26,7 @@ async def list_events(
     is_free: bool | None = None,
     is_student_friendly: bool | None = None,
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await event_service.list_events(
