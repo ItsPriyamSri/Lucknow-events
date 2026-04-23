@@ -23,14 +23,14 @@ The platform is built and maintained by the Lucknow tech community, for the Luck
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     Discovery Agent                          │
-│  Gemini 3 Flash + Google Search Grounding                    │
-│  Runs every 3 hours via Celery Beat                          │
+│                     Discovery Agent                         │
+│  Gemini 3 Flash + Google Search Grounding                   │
+│  Runs every 3 hours via Celery Beat                         │
 └───────────────────────────┬─────────────────────────────────┘
                             │ individual event URLs
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Ingestion Pipeline                         │
+│                   Ingestion Pipeline                        │
 │  1. Scrape page (httpx + BeautifulSoup)                     │
 │  2. Pre-filter garbage (JS soup / 404 / no event signal)    │
 │  3. Extraction Agent — Gemini extracts structured JSON      │
@@ -40,8 +40,8 @@ The platform is built and maintained by the Lucknow tech community, for the Luck
                             │ structured Event record
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              PostgreSQL  ←→  FastAPI  ←→  Next.js            │
-│         (events, raw_events, sources, submissions)           │
+│              PostgreSQL  ←→  FastAPI  ←→  Next.js           │
+│         (events, raw_events, sources, submissions)          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
