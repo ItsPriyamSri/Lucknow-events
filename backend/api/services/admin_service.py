@@ -85,13 +85,70 @@ async def list_crawl_runs(db: AsyncSession, limit: int = 50) -> list[CrawlRun]:
 
 # ─── Moderation ──────────────────────────────────────────────────────────────
 
-async def list_pending_moderation(db: AsyncSession) -> list[ModerationQueueItem]:
+async def list_pending_moderation(db: AsyncSession) -> list[dict]:
+    """List pending moderation items, enriched with raw_event preview data."""
+    from api.models.raw_event import RawEvent
+
     res = await db.execute(
         select(ModerationQueueItem)
         .where(ModerationQueueItem.status == "pending")
         .order_by(ModerationQueueItem.created_at.asc())
     )
-    return res.scalars().all()
+    items = res.scalars().all()
+
+    enriched: list[dict] = []
+    for item in items:
+        record: dict = {
+            "id": str(item.id),
+            "entity_type": item.entity_type,
+            "entity_id": str(item.entity_id) if item.entity_id else None,
+            "reason": item.reason,
+            "severity": item.severity,
+            "status": item.status,
+            "ai_verdict": item.ai_verdict,
+            "notes": item.notes,
+            "created_at": item.created_at,
+            # preview fields (filled below)
+            "preview_title": None,
+            "preview_url": None,
+            "preview_community": None,
+            "preview_confidence": None,
+        }
+
+        if item.entity_type == "raw_event" and item.entity_id:
+            try:
+                raw = await db.get(RawEvent, str(item.entity_id))
+                if raw:
+                    extracted = raw.ai_extracted_json or {}
+                    payload = raw.raw_payload_json or {}
+
+                    raw_title = (
+                        extracted.get("title")
+                        or payload.get("title")
+                        or "(untitled)"
+                    )
+                    # Strip any residual HTML tags and truncate
+                    import re as _re
+                    clean_title = _re.sub(r"<[^>]+>", "", str(raw_title)).strip()
+                    record["preview_title"] = clean_title[:120] if clean_title else "(untitled)"
+
+                    record["preview_url"] = (
+                        extracted.get("canonical_url")
+                        or extracted.get("registration_url")
+                        or payload.get("page_url")
+                        or payload.get("url")
+                    )
+                    record["preview_community"] = (
+                        extracted.get("community_name")
+                        or extracted.get("organizer_name")
+                    )
+                    record["preview_confidence"] = raw.extraction_confidence
+            except Exception:
+                pass  # don't block the list on a single bad record
+
+        enriched.append(record)
+
+    return enriched
 
 
 async def resolve_moderation(db: AsyncSession, item_id: str, decision: str) -> ModerationQueueItem | None:
@@ -131,6 +188,15 @@ async def list_all_events(
         )
     ).scalars().all()
     return list(items), int(total)
+
+
+async def get_bad_date_events(db: AsyncSession) -> tuple[list[Event], int]:
+    """Return events with junk placeholder dates (start_at > year 2050)."""
+    from datetime import timezone
+    sentinel = datetime(year=2050, month=1, day=1, tzinfo=timezone.utc)
+    res = await db.execute(select(Event).where(Event.start_at > sentinel))
+    items = res.scalars().all()
+    return list(items), len(items)
 
 
 async def update_event(db: AsyncSession, event_id: str, data: dict[str, Any]) -> Event | None:

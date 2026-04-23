@@ -9,7 +9,6 @@ from api.core.database import get_db
 from api.core.deps import get_current_admin
 from api.schemas.admin import (
     AdminEventListResponse,
-    AdminEventOut,
     EventUpdate,
 )
 from api.schemas.event import EventDetailResponse
@@ -55,32 +54,47 @@ async def rescrape_event(
     admin: Admin,
     db: AsyncSession = Depends(get_db),
 ):
-    """Re-trigger the ingestion pipeline for the source of a specific event."""
+    """Re-extract a single event directly from its canonical URL via Gemini Search Grounding.
+    
+    This does NOT re-crawl the source listing — it targets the specific event page,
+    fetches it, and runs the AI extraction pipeline in-place to update dates/images/venue.
+    """
     from api.models.event import Event
-    from sqlalchemy import select
 
-    # Find the source_id from the event's source
     ev = await db.get(Event, event_id)
     if ev is None:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # Find the source linked to this event via canonical_url or source tracking
-    from api.models.source import Source
-    res = await db.execute(
-        select(Source).where(Source.base_url == ev.canonical_url).limit(1)
-    )
-    src = res.scalars().first()
+    from workers.tasks.crawl import rescrape_single_event
+    task = rescrape_single_event.delay(event_id)
+    return {"task_id": task.id, "event_id": event_id, "url": ev.canonical_url}
 
-    if src is None:
-        # Fallback: try to match via raw_events table
-        raise HTTPException(
-            status_code=422,
-            detail="Could not find associated source for this event. Try crawling the source directly."
-        )
 
-    from workers.tasks.pipeline import run_pipeline_for_source
-    task = run_pipeline_for_source.delay(str(src.id))
-    return {"task_id": task.id, "source_id": str(src.id), "event_id": event_id}
+@router.post("/fix-bad-dates", status_code=202)
+async def fix_bad_dates(
+    admin: Admin,
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch re-extract all events with junk placeholder dates (start_at > year 2050).
+    
+    Events that still have no real date after re-extraction are deleted automatically.
+    """
+    _, count = await admin_service.get_bad_date_events(db)
+    from workers.tasks.crawl import rescrape_bad_dates
+    task = rescrape_bad_dates.delay()
+    return {
+        "task_id": task.id,
+        "events_queued": count,
+        "message": f"Re-extracting {count} events with junk placeholder dates",
+    }
+
+
+@router.post("/expire-now", status_code=202)
+async def expire_now(admin: Admin):
+    """Manually trigger the expiry cleanup task (runs all 3 passes: end_at, stale start_at, delete 2099)."""
+    from workers.tasks.crawl import expire_past_events
+    task = expire_past_events.delay()
+    return {"task_id": task.id, "message": "Expiry cleanup queued"}
 
 
 @router.patch("/{event_id}/feature", response_model=EventDetailResponse)

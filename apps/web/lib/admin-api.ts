@@ -47,13 +47,15 @@ export interface AdminEvent {
   event_type: string | null;
   city: string | null;
   locality: string | null;
-  venue: string | null;
+  venue_name: string | null;
   community_name: string | null;
   canonical_url: string;
   registration_url: string | null;
+  poster_url: string | null;
   is_featured: boolean;
   is_cancelled: boolean;
   is_free: boolean;
+  topics_json: string[];
   published_at: string | null;
   expires_at: string | null;
   created_at: string;
@@ -93,7 +95,14 @@ export interface ModerationItem {
   reason: string | null;
   severity: string | null;
   status: string;
+  ai_verdict: Record<string, unknown> | null;
+  notes: string | null;
   created_at: string;
+  // Enriched preview fields joined from the raw_event record
+  preview_title: string | null;
+  preview_url: string | null;
+  preview_community: string | null;
+  preview_confidence: number | null;
 }
 
 export interface StatsOut {
@@ -192,6 +201,14 @@ export const adminService = {
   },
   deleteEvent: async (id: string): Promise<void> => {
     await adminApi.delete(`/admin/events/${id}`);
+  },
+  fixBadDates: async (): Promise<{ task_id: string; events_queued: number }> => {
+    const { data } = await adminApi.post<{ task_id: string; events_queued: number }>("/admin/events/fix-bad-dates");
+    return data;
+  },
+  expireNow: async (): Promise<{ task_id: string }> => {
+    const { data } = await adminApi.post<{ task_id: string }>("/admin/events/expire-now");
+    return data;
   },
 
   // Moderation

@@ -2,8 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# ─── Shared UUID coercion ─────────────────────────────────────────────────────
+# The DB uses UUID(as_uuid=True), so ORM objects return Python uuid.UUID.
+# Pydantic schemas declare id: str, so we need a validator to convert.
+
+def _coerce_uuid(v: Any) -> str:
+    if isinstance(v, UUID):
+        return str(v)
+    return v
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -37,6 +48,11 @@ class SourceOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id_to_str(cls, v: Any) -> str:
+        return _coerce_uuid(v)
 
 
 class SourceCreate(BaseModel):
@@ -73,13 +89,15 @@ class AdminEventOut(BaseModel):
     event_type: str | None
     city: str | None
     locality: str | None
-    venue: str | None = Field(default=None, validation_alias="venue_name")
+    venue_name: str | None
     community_name: str | None
     canonical_url: str
     registration_url: str | None
+    poster_url: str | None
     is_featured: bool
     is_cancelled: bool
     is_free: bool
+    topics_json: list[Any] = Field(default_factory=list)
     published_at: datetime | None
     expires_at: datetime | None
     created_at: datetime
@@ -87,6 +105,11 @@ class AdminEventOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id_to_str(cls, v: Any) -> str:
+        return _coerce_uuid(v)
 
 
 class AdminEventListResponse(BaseModel):
@@ -133,9 +156,20 @@ class ModerationItemOut(BaseModel):
     ai_verdict: dict[str, Any] | None
     notes: str | None
     created_at: datetime
+    # Enriched preview fields (from the related raw_event / event record)
+    preview_title: str | None = None
+    preview_url: str | None = None
+    preview_community: str | None = None
+    preview_confidence: float | None = None
 
     class Config:
         from_attributes = True
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id_to_str(cls, v: Any) -> str:
+        return _coerce_uuid(v)
+
 
 
 # ─── Stats ────────────────────────────────────────────────────────────────────
@@ -164,6 +198,11 @@ class CrawlRunOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("id", "source_id", mode="before")
+    @classmethod
+    def _ids_to_str(cls, v: Any) -> str:
+        return _coerce_uuid(v)
 
 
 # ─── Discovery ────────────────────────────────────────────────────────────────

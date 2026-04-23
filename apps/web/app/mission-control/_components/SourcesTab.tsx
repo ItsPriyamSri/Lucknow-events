@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { adminService, type AdminSource } from "@/lib/admin-api";
-import { Loader2, Play, PlayCircle, Plus, Trash2, Shield, ShieldOff, ShieldCheck, X } from "lucide-react";
+import { adminService, type AdminSource, type CrawlRun } from "@/lib/admin-api";
+import { Loader2, Play, PlayCircle, Plus, Trash2, Shield, ShieldOff, ShieldCheck, X, History } from "lucide-react";
 
 const STATUS_CONFIG = {
   active: { label: "Active", color: "bg-green-500/10 text-green-600" },
@@ -71,11 +71,16 @@ export function SourcesTab() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [taskMsg, setTaskMsg] = useState("");
+  const [crawlHistory, setCrawlHistory] = useState<CrawlRun[]>([]);
 
   async function load() {
     setLoading(true);
-    const data = await adminService.listSources().catch(() => []);
+    const [data, runs] = await Promise.all([
+      adminService.listSources().catch(() => [] as AdminSource[]),
+      adminService.crawlRuns().catch(() => [] as CrawlRun[]),
+    ]);
     setSources(data);
+    setCrawlHistory(runs.slice(0, 15));
     setLoading(false);
   }
 
@@ -198,6 +203,68 @@ export function SourcesTab() {
       )}
 
       {showAdd && <AddSourceModal onClose={() => setShowAdd(false)} onAdded={(s) => { setSources((list) => [s, ...list]); setShowAdd(false); }} />}
+
+      {/* Crawl Run History */}
+      {crawlHistory.length > 0 && (
+        <div className="mt-8">
+          <div className="flex items-center gap-2 mb-3">
+            <History className="w-4 h-4 text-muted-foreground" />
+            <h3 className="font-extrabold text-sm">Recent Crawl Runs</h3>
+          </div>
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30">
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase">Status</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase hidden md:table-cell">Started</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase">Found</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase hidden lg:table-cell">New</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase hidden lg:table-cell">Published</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase hidden xl:table-cell">Error</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {crawlHistory.map((run) => {
+                  const statusColor =
+                    run.status === "success" ? "bg-green-500/10 text-green-600" :
+                    run.status === "error" ? "bg-destructive/10 text-destructive" :
+                    run.status === "running" ? "bg-blue-500/10 text-blue-600" :
+                    "bg-muted text-muted-foreground";
+
+                  const durationMs = run.finished_at
+                    ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
+                    : null;
+                  const duration = durationMs != null
+                    ? durationMs > 60000 ? `${Math.round(durationMs / 60000)}m` : `${Math.round(durationMs / 1000)}s`
+                    : "—";
+
+                  return (
+                    <tr key={run.id} className="hover:bg-muted/10 transition-colors">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase ${statusColor}`}>
+                            {run.status ?? "unknown"}
+                          </span>
+                          <span className="text-xs text-muted-foreground hidden sm:inline">{duration}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5 hidden md:table-cell text-xs text-muted-foreground">
+                        {new Date(run.started_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </td>
+                      <td className="px-4 py-2.5 font-semibold text-sm">{run.events_found}</td>
+                      <td className="px-4 py-2.5 hidden lg:table-cell text-green-600 font-semibold text-sm">+{run.events_new}</td>
+                      <td className="px-4 py-2.5 hidden lg:table-cell text-primary font-semibold text-sm">{run.events_published}</td>
+                      <td className="px-4 py-2.5 hidden xl:table-cell text-xs text-muted-foreground max-w-[180px] truncate">
+                        {run.error_summary ?? "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

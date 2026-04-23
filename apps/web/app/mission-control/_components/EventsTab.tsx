@@ -22,7 +22,7 @@ function EditModal({ event, onClose, onSaved }: {
     canonical_url: event.canonical_url,
     city: event.city ?? "",
     locality: event.locality ?? "",
-    venue_name: event.venue ?? "",
+    venue_name: event.venue_name ?? "",
     mode: event.mode ?? "",
     event_type: event.event_type ?? "",
     is_free: event.is_free,

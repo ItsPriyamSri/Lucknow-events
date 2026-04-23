@@ -12,6 +12,11 @@ from api.core.config import settings
 from api.core.limiter import limiter
 from api.routers import router as api_v1_router
 
+# Ensure the Celery app is initialized so that @shared_task decorators
+# (imported lazily inside admin endpoints) bind to our Redis broker,
+# not the default AMQP transport.
+import workers.celery_app as _celery  # noqa: F401
+
 
 def configure_logging() -> None:
     structlog.configure(
