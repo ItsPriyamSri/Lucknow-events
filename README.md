@@ -24,7 +24,7 @@ The platform is built and maintained by the Lucknow tech community, for the Luck
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Discovery Agent                          │
-│  Gemini 2.0 Flash + Google Search Grounding                  │
+│  Gemini 3 Flash + Google Search Grounding                    │
 │  Runs every 3 hours via Celery Beat                          │
 └───────────────────────────┬─────────────────────────────────┘
                             │ individual event URLs
