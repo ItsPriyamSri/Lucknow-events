@@ -177,3 +177,12 @@ redis_data/
 uploads/
 tmp/
 temp/
+
+# ==============================================================================
+# Documentation
+# ==============================================================================
+# Ignore all markdown files by default
+*.md
+
+# Whitelist specific markdown files
+!README.md
