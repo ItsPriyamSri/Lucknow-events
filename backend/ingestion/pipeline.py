@@ -263,13 +263,49 @@ async def _process_raw_event(
         await db.commit()
         return {}
 
-    # ── Step 6c: require a real start date/time before publishing ──────
-    # Missing dates are the #1 source of "soup" (events silently get bogus dates).
+    # ── Step 6c: handle missing start date ───────────────────────────
+    # If no date is found: attempt a targeted grounded search for the date first.
+    # If still nothing, publish as "Date TBA" if the event is otherwise valid
+    # (real title, Lucknow-relevant, decent confidence). TBA events appear on
+    # the events page (sorted to the bottom) but are excluded from the calendar.
     if parsed.get("start_at") is None:
-        await _queue_moderation(db, raw_event, "missing_start_at")
-        raw_event.pipeline_status = "moderation"
-        await db.commit()
-        return {"new": 1, "queued": 1}
+        # Try grounded date lookup (second AI call, focused on date only)
+        if confidence >= 0.30:
+            try:
+                from ai.extraction_agent import grounded_date_search
+                date_result = await grounded_date_search(
+                    page_url=parsed.get("canonical_url") or source_url,
+                    known_title=parsed.get("title"),
+                )
+                if date_result.get("start_at"):
+                    parsed["start_at"] = date_result["start_at"]
+                    parsed["end_at"] = date_result.get("end_at") or parsed.get("end_at")
+                    confidence = max(confidence, 0.65)
+                    raw_event.extraction_confidence = confidence
+                    log.info("pipeline.grounded_date_found", url=parsed.get("canonical_url"))
+            except Exception as _exc:
+                log.debug("pipeline.grounded_date_search_failed", error=str(_exc))
+
+        if parsed.get("start_at") is None:
+            # Still no date. Publish as TBA if event looks real enough.
+            _tba_eligible = (
+                confidence >= 0.45
+                and relevance >= 0.50
+                and _is_valid_title(parsed.get("title"))
+            )
+            if _tba_eligible:
+                # Use a far-future sentinel date — expires_at = 30 days from now.
+                from datetime import timezone
+                parsed["start_at"] = datetime.now(timezone.utc).replace(
+                    year=datetime.now(timezone.utc).year + 1
+                )
+                parsed["_date_tba"] = True
+                log.info("pipeline.publishing_tba", title=parsed.get("title"))
+            else:
+                await _queue_moderation(db, raw_event, "missing_start_at")
+                raw_event.pipeline_status = "moderation"
+                await db.commit()
+                return {"new": 1, "queued": 1}
 
     # ── Step 7: deduplicate ───────────────────────────────────────────
     dup = await find_duplicate(
@@ -596,10 +632,18 @@ async def _publish_event(
 
     start_at = parsed.get("start_at")
     end_at = parsed.get("end_at")
-    expires_at = (end_at + timedelta(hours=48)) if isinstance(end_at, datetime) else None
+    is_date_tba = bool(parsed.get("_date_tba", False))
 
     if not isinstance(start_at, datetime):
         raise ValueError("Refusing to publish event without start_at")
+
+    if is_date_tba:
+        # TBA events expire 30 days from now if no real date is ever scraped.
+        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    elif isinstance(end_at, datetime):
+        expires_at = end_at + timedelta(hours=48)
+    else:
+        expires_at = None
 
     event = Event(
         id=str(uuid.uuid4()),
@@ -628,6 +672,7 @@ async def _publish_event(
         poster_url=parsed.get("poster_url"),
         is_free=bool(parsed.get("is_free", True)),
         is_student_friendly=bool(parsed.get("is_student_friendly", False)),
+        date_tba=is_date_tba,
         relevance_score=relevance_score,
         publish_score=publish_score,
         raw_event_id=str(raw_event.id),

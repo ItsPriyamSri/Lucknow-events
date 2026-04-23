@@ -29,6 +29,7 @@ export interface Event {
   short_description?: string | null;
   description?: string | null;
   updated_at?: string;
+  date_tba?: boolean;
 }
 
 export interface EventsResponse {
@@ -114,6 +115,10 @@ export const eventService = {
 
   getStudentFriendly: async (): Promise<Event[]> => {
     return fetchApi<Event[]>("/events/student-friendly");
+  },
+
+  getPastEvents: async (days = 30): Promise<Event[]> => {
+    return fetchApi<Event[]>(`/events/past?days=${days}`);
   },
 
   submitEvent: async (payload: { url: string }): Promise<void> => {

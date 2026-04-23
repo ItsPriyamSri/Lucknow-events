@@ -7,7 +7,7 @@ import { buildEventsHref, searchParamsToEventQuery } from "@/lib/events-query";
 import { ChevronLeft, ChevronRight, Loader2, Search, SlidersHorizontal, ChevronDown, MapPin, Users, Tag, MonitorPlay } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import useSWR from "swr";
 
 const emptyResponse: EventsResponse = { items: [], total: 0, page: 1, limit: 20 };
@@ -44,6 +44,14 @@ export function EventsExplorer() {
     () => facetService.getCommunities(),
     { revalidateOnFocus: false },
   );
+
+  // Past events (last 30 days) — always flat, no pagination
+  const { data: pastEvents = [] } = useSWR(
+    "events-past",
+    () => eventService.getPastEvents(30),
+    { revalidateOnFocus: false },
+  );
+  const [pastExpanded, setPastExpanded] = useState(false);
 
   const response = data ?? emptyResponse;
   const { items, total, page, limit } = response;
@@ -284,23 +292,54 @@ export function EventsExplorer() {
                 )}
               </div>
             )}
-          </>
-        ) : (
-          <div className="rounded-2xl border border-dashed border-border py-28 text-center flex flex-col items-center bg-card shadow-sm mt-8 mx-auto max-w-2xl">
-            <Search className="w-16 h-16 text-muted mb-6" />
-            <h3 className="text-2xl font-extrabold mb-3">No matching events</h3>
-            <p className="text-muted-foreground mb-10 max-w-md mx-auto">
-              We couldn't find any events matching your specific filters. Try broadening your search or tweaking the mode!
-            </p>
-            <button
-              onClick={() => replaceQuery((sp) => Array.from(sp.keys()).forEach(k => sp.delete(k)))}
-              className="rounded-full bg-secondary text-foreground text-sm border border-border px-8 py-3 font-bold hover:bg-muted transition-all"
-            >
-              Reset Filters
-            </button>
-          </div>
-        )}
-      </div>
+        </>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-border py-28 text-center flex flex-col items-center bg-card shadow-sm mt-8 mx-auto max-w-2xl">
+          <Search className="w-16 h-16 text-muted mb-6" />
+          <h3 className="text-2xl font-extrabold mb-3">No matching events</h3>
+          <p className="text-muted-foreground mb-10 max-w-md mx-auto">
+            We couldn&apos;t find any events matching your specific filters. Try broadening your search or tweaking the mode!
+          </p>
+          <button
+            onClick={() => replaceQuery((sp) => Array.from(sp.keys()).forEach(k => sp.delete(k)))}
+            className="rounded-full bg-secondary text-foreground text-sm border border-border px-8 py-3 font-bold hover:bg-muted transition-all"
+          >
+            Reset Filters
+          </button>
+        </div>
+      )}
+
+      {/* ── Completed Events ─────────────────────────────────────────────── */}
+      {pastEvents.length > 0 && (
+        <div className="mt-16 border-t border-border/50 pt-10">
+          <button
+            id="completed-events-toggle"
+            onClick={() => setPastExpanded((v) => !v)}
+            className="flex items-center gap-3 mb-6 group w-full text-left"
+          >
+            <h2 className="text-lg font-bold text-muted-foreground group-hover:text-foreground transition-colors">
+              ✓ Completed Events
+            </h2>
+            <span className="text-xs rounded-full bg-muted px-2 py-0.5 text-muted-foreground font-semibold">
+              {pastEvents.length}
+            </span>
+            <ChevronDown
+              className={`h-4 w-4 ml-auto text-muted-foreground transition-transform duration-200 ${
+                pastExpanded ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+
+          {pastExpanded && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {pastEvents.map((event) => (
+                <EventCard key={event.id} event={event} isPast />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  </div>
   );
 }

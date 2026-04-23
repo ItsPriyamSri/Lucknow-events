@@ -6,7 +6,7 @@ import Image from "next/image";
 const topicLabel = (t: unknown): string =>
   typeof t === "string" ? t : (t as any)?.name ?? String(t);
 
-export function EventCard({ event }: { event: Event }) {
+export function EventCard({ event, isPast = false }: { event: Event; isPast?: boolean }) {
   const targetUrl = event.registration_url || event.canonical_url;
 
   return (
@@ -14,7 +14,11 @@ export function EventCard({ event }: { event: Event }) {
       href={targetUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-all hover:border-primary/50 hover:shadow-lg hover:-translate-y-0.5 group h-full"
+      className={`flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-all group h-full ${
+        isPast
+          ? "opacity-55 grayscale-[60%] cursor-default hover:opacity-65"
+          : "hover:border-primary/50 hover:shadow-lg hover:-translate-y-0.5"
+      }`}
       title={event.title}
     >
       {event.poster_url ? (
@@ -60,8 +64,17 @@ export function EventCard({ event }: { event: Event }) {
         <div className="mb-4 space-y-1.5 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
             <Calendar className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{formatDate(event.start_at)}</span>
+            {(event as any).date_tba ? (
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-yellow-600 bg-yellow-500/10 border border-yellow-500/20 rounded-full px-2 py-0.5">
+                📅 Date TBA
+              </span>
+            ) : (
+              <span className={`truncate${isPast ? " line-through text-muted-foreground/60" : ""}`}>
+                {formatDate(event.start_at)}
+              </span>
+            )}
           </div>
+
           <div className="flex items-center gap-2">
             <MapPin className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">
@@ -88,9 +101,15 @@ export function EventCard({ event }: { event: Event }) {
         )}
 
         <div className="mt-auto pt-4 flex gap-2 w-full justify-between items-center border-t border-border/50">
-          <span className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold transition-colors group-hover:bg-primary/90">
-            View Event <ArrowUpRight className="h-4 w-4" />
-          </span>
+          {isPast ? (
+            <span className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-muted text-muted-foreground px-4 py-2 text-sm font-semibold">
+              ✓ Completed
+            </span>
+          ) : (
+            <span className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold transition-colors group-hover:bg-primary/90">
+              View Event <ArrowUpRight className="h-4 w-4" />
+            </span>
+          )}
         </div>
       </div>
     </a>

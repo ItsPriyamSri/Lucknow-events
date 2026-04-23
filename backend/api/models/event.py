@@ -51,6 +51,7 @@ class Event(Base):
     is_featured: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     is_cancelled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     is_student_friendly: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    date_tba: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
     relevance_score: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.0")
     publish_score: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.0")

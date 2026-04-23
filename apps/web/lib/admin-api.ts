@@ -126,7 +126,43 @@ export interface CrawlRun {
   created_at: string;
 }
 
-// ─── Service ──────────────────────────────────────────────────────────────────
+export interface CommunitySubmission {
+  id: string;
+  community_name: string | null;
+  community_url: string | null;
+  community_description: string | null;
+  submitter_name: string | null;
+  submitter_email: string | null;
+  notes: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface QueueItem {
+  id: string;
+  pipeline_status: string;
+  extraction_method: string | null;
+  extraction_confidence: number;
+  title: string;
+  url: string | null;
+  community: string | null;
+  reason: string | null;
+  seen_at: string;
+}
+
+export interface LastPublishedEvent {
+  id: string;
+  title: string;
+  start_at: string;
+  mode: string | null;
+  community_name: string | null;
+  canonical_url: string;
+  poster_url: string | null;
+  published_at: string;
+  date_tba: boolean;
+}
+
+
 
 export const adminService = {
   // Auth
@@ -211,18 +247,31 @@ export const adminService = {
     return data;
   },
 
-  // Moderation
-  listModeration: async (): Promise<ModerationItem[]> => {
-    const { data } = await adminApi.get<ModerationItem[]>("/admin/moderation");
+  // Moderation — community submissions
+  listCommunitySubmissions: async (status = "pending"): Promise<CommunitySubmission[]> => {
+    const { data } = await adminApi.get<CommunitySubmission[]>(`/admin/moderation/communities?status=${status}`);
     return data;
   },
-  approve: async (id: string): Promise<ModerationItem> => {
-    const { data } = await adminApi.post<ModerationItem>(`/admin/moderation/${id}/approve`);
+  approveModeration: async (id: string): Promise<Record<string, unknown>> => {
+    const { data } = await adminApi.post<Record<string, unknown>>(`/admin/moderation/communities/${id}/approve`);
     return data;
   },
-  reject: async (id: string): Promise<ModerationItem> => {
-    const { data } = await adminApi.post<ModerationItem>(`/admin/moderation/${id}/reject`);
+  rejectModeration: async (id: string): Promise<Record<string, unknown>> => {
+    const { data } = await adminApi.post<Record<string, unknown>>(`/admin/moderation/communities/${id}/reject`);
     return data;
+  },
+
+  // Event pipeline queue
+  listEventQueue: async (): Promise<QueueItem[]> => {
+    const { data } = await adminApi.get<QueueItem[]>("/admin/events/queue");
+    return data;
+  },
+  getLastPublished: async (): Promise<LastPublishedEvent | null> => {
+    const { data } = await adminApi.get<LastPublishedEvent | null>("/admin/events/queue/last-published");
+    return data;
+  },
+  removeFromQueue: async (rawEventId: string): Promise<void> => {
+    await adminApi.delete(`/admin/events/queue/${rawEventId}`);
   },
 
   // Discovery

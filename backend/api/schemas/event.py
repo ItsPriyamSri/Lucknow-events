@@ -45,6 +45,7 @@ class EventBase(BaseModel):
     is_featured: bool = False
     is_cancelled: bool = False
     is_student_friendly: bool = False
+    date_tba: bool = False
 
     relevance_score: float = 0.0
     publish_score: float = 0.0

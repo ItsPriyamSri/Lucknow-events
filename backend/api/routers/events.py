@@ -62,6 +62,15 @@ async def student_friendly(db: AsyncSession = Depends(get_db)):
     return await event_service.list_student_friendly(db)
 
 
+@router.get("/past", response_model=list[EventDetailResponse])
+async def past_events(
+    days: int = Query(30, ge=1, le=90, description="How many days back to look"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return recently completed events (last N days) for the Completed Events section."""
+    return await event_service.list_past_events(db, days=days)
+
+
 @router.get("/{slug}", response_model=EventDetailResponse)
 async def get_event(slug: str, db: AsyncSession = Depends(get_db)):
     event = await event_service.get_event_by_slug(db, slug)

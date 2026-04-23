@@ -71,7 +71,8 @@ async def list_events(
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = (await db.execute(count_stmt)).scalar_one()
 
-    stmt = stmt.order_by(Event.start_at.asc()).offset((page - 1) * limit).limit(limit)
+    # Sort: real-dated events first (by date ASC), then TBA events (by created_at DESC)
+    stmt = stmt.order_by(Event.date_tba.asc(), Event.start_at.asc()).offset((page - 1) * limit).limit(limit)
     items = (await db.execute(stmt)).scalars().all()
     return items, int(total)
 
@@ -83,6 +84,23 @@ async def list_featured(db: AsyncSession, max_items: int = 5) -> list[Event]:
         .order_by(Event.start_at.asc())
         .limit(max_items)
     )
+    return (await db.execute(stmt)).scalars().all()
+
+
+async def list_calendar_events(db: AsyncSession, start_date: date | None = None, end_date: date | None = None) -> list[Event]:
+    """Return events for the calendar view — excludes date_tba events."""
+    now = _utc_now()
+    stmt = select(Event).where(
+        (Event.published_at.is_not(None))
+        & (Event.expires_at.is_(None) | (Event.expires_at > now))
+        & (Event.date_tba == False)  # noqa: E712
+        & (Event.start_at >= now)
+    )
+    if start_date is not None:
+        stmt = stmt.where(Event.start_at >= datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc))
+    if end_date is not None:
+        stmt = stmt.where(Event.start_at <= datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc))
+    stmt = stmt.order_by(Event.start_at.asc())
     return (await db.execute(stmt)).scalars().all()
 
 
@@ -111,3 +129,23 @@ async def list_student_friendly(db: AsyncSession) -> list[Event]:
     )
     return (await db.execute(stmt)).scalars().all()
 
+
+async def list_past_events(db: AsyncSession, days: int = 30) -> list[Event]:
+    """Return published events that completed within the last `days` days.
+
+    Shown in the "Completed Events" section on the frontend.
+    Ordered most-recently-completed first. Excludes date_tba events.
+    """
+    now = _utc_now()
+    cutoff = now - timedelta(days=days)
+    stmt = (
+        select(Event)
+        .where(
+            (Event.published_at.is_not(None))
+            & (Event.date_tba == False)  # noqa: E712
+            & (Event.start_at < now)
+            & (Event.start_at >= cutoff)
+        )
+        .order_by(Event.start_at.desc())
+    )
+    return (await db.execute(stmt)).scalars().all()

@@ -3,24 +3,81 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import re
 from typing import Any
 
 import structlog
 from celery import shared_task
 from google.genai import types
-from pydantic import BaseModel
 
 from api.core.database import SessionLocal
 
 log = structlog.get_logger(__name__)
 
+# ─── Listing-page blocklist ───────────────────────────────────────────────────
+# Root domains and browse/listing paths that are never individual event pages.
+# Even if the AI returns them, we drop them here.
+_LISTING_BLOCKLIST = re.compile(
+    r"""
+    (^https?://(www\.)?                     # root domain — no path
+        (unstop\.com|devfolio\.co|lu\.ma|commudle\.com|
+         meetup\.com|townscript\.com|konfhub\.com|
+         gdg\.community\.dev|fossunited\.org|
+         eventbrite\.(com|in)|
+         hackathon\.io|hackerearth\.com)
+    /?$)
+    |
+    (/competitions/?$|/hackathons/?$|/events/?$|
+     /browse/?|/explore/?|/find/?|/search/?|
+     /communities/?$|/chapters/?$|/groups/?$)
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
 
-class DiscoveryResult(BaseModel):
-    event_urls: list[str]
+_DISCOVERY_SYSTEM_PROMPT = """\
+You are an intelligent event discovery agent for the Lucknow Tech Events aggregator.
+
+Your mission: Find the direct URLs of INDIVIDUAL tech event pages for events happening
+in or around Lucknow, UP, India — or online events hosted by Lucknow-based communities —
+over the next 4 months.
+
+## How to approach this
+
+Think before you search. Design your own search strategy:
+1. Consider which tech communities, colleges, and platforms are active in Lucknow.
+2. Write targeted queries that surface individual event pages (not listing pages).
+3. Use Google Search to execute those queries.
+4. From the search results, extract only the URLs that lead to a SINGLE, SPECIFIC event.
+
+## Active Lucknow tech communities to focus on
+- GDG Lucknow, GDG on Campus chapters (IIIT Lucknow, SRMCEM, BBDNIIT, BBDITM, Integral University, BNCET)
+- TFUG Lucknow / AI Community Lucknow
+- FOSS United Lucknow
+- AWS User Group Lucknow / AWS Cloud Club
+- Lucknow AI Labs
+- CNCF Cloud Native Lucknow
+- College fests: HackoFiesta (IIIT Lucknow), AXIOS (IIIT Lucknow), E-Summit IIIT, Kalpathon (BBDU)
+
+## Platforms where their events are listed
+lu.ma, commudle.com, gdg.community.dev, devfolio.co, unstop.com,
+meetup.com, townscript.com, fossunited.org, rifio.dev
+
+## URL rules — ONLY return a URL if it:
+- Points to ONE specific, named event (e.g. devfolio.co/events/hackofiesta-6, lu.ma/abc123)
+- Has a recognisable event slug or ID in the path (not just /events or /competitions)
+- Is NOT a platform homepage or root domain
+- Is NOT a browse, search, listing, or directory page (/events, /hackathons, /browse, /competitions, /find)
+- Is NOT a blog post, news article, job listing, or community homepage
+
+## Output format
+Return your final answer as a plain list of URLs — one URL per line.
+Do NOT include markdown, bullet points, numbering, or any explanation.
+Only the raw URLs, one per line.
+"""
 
 
 def _build_month_window(months: int = 4) -> tuple[list[str], str]:
-    """Return a list of 'Month YYYY' strings and a query-friendly OR string for the next N months."""
+    """Return a list of 'Month YYYY' strings for the next N months."""
     now = datetime.datetime.now()
     month_labels = []
     for i in range(months):
@@ -28,8 +85,25 @@ def _build_month_window(months: int = 4) -> tuple[list[str], str]:
         y = now.year + (now.month - 1 + i) // 12
         date_obj = datetime.date(y, m, 1)
         month_labels.append(date_obj.strftime("%B %Y"))
-    months_str = " OR ".join(f'"{m}"' for m in month_labels)
-    return month_labels, months_str
+    return month_labels, " OR ".join(f'"{m}"' for m in month_labels)
+
+
+def _extract_urls_from_text(text: str) -> list[str]:
+    """Extract all https:// URLs from free-form text."""
+    raw = re.findall(r"https?://[^\s\)\]\,\"\'<>]+", text)
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in raw:
+        url = url.rstrip(".,;:/")
+        if url and url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def _is_listing_page(url: str) -> bool:
+    """Return True if the URL matches known listing/browse patterns."""
+    return bool(_LISTING_BLOCKLIST.search(url))
 
 
 @shared_task(
@@ -38,113 +112,109 @@ def _build_month_window(months: int = 4) -> tuple[list[str], str]:
     max_retries=1,
 )
 def auto_discover_events(self, custom_queries: list[str] | None = None) -> dict[str, Any]:
-    """Scheduled task to find new event URLs via AI and queue them for validation.
-
-    Args:
-        custom_queries: Optional list of custom search queries to run (admin override).
-    """
+    """Scheduled task to find new event URLs via AI and queue them for validation."""
     return asyncio.get_event_loop().run_until_complete(_async_discover(custom_queries))
 
 
 async def _async_discover(custom_queries: list[str] | None = None) -> dict[str, Any]:
     from ai.gemini_client import get_client
-    from api.models.source import Source
     from api.services.submission_service import create_submission
-    from sqlalchemy import select
 
     client = get_client()
+    month_labels, months_str = _build_month_window(months=4)
 
-    _, months_str = _build_month_window(months=4)  # Next 4 months only (quarterly window)
+    if custom_queries:
+        # Admin-supplied custom queries: run each one individually (old behaviour)
+        # but still parse text responses — no JSON constraint.
+        async def _run_query(q: str) -> list[str]:
+            try:
+                resp = await client.aio.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=q,
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        temperature=0.1,
+                        system_instruction=_DISCOVERY_SYSTEM_PROMPT,
+                    ),
+                )
+                return _extract_urls_from_text(resp.text or "")
+            except Exception as exc:
+                log.warning("discovery.query_error", error=str(exc))
+                return []
 
-    # Default discovery queries — focused on real Lucknow event sources
-    default_queries = [
-        # Known Lucknow community platforms
-        (
-            f'Search: site:lu.ma "Lucknow" ({months_str}). '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-        (
-            f'Search: site:commudle.com "lucknow" ({months_str}). '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-        (
-            f'Search: site:unstop.com ("Lucknow" OR "IIIT Lucknow" OR "BBD" OR "SRMCEM" OR "Amity Lucknow") ({months_str}). '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-        # Known Lucknow communities with explicit names
-        (
-            f'Search: ("GDG Lucknow" OR "TFUG Lucknow" OR "FOSS United Lucknow" OR "AWS User Group Lucknow" OR "Lucknow AI Labs") '
-            f'upcoming events ({months_str}). '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-        # College events
-        (
-            f'Search: ("IIIT Lucknow" OR "HackoFiesta" OR "AXIOS" OR "E-Summit Lucknow" OR "BBD Lucknow" OR "Integral University Lucknow") '
-            f'tech event hackathon fest ({months_str}). '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-        # Broader Lucknow tech events
-        (
-            f'Search: (hackathon OR workshop OR conference OR meetup) Lucknow UP India ({months_str}) site:devfolio.co OR site:unstop.com OR site:lu.ma. '
-            'Return ONLY a JSON list of direct event page URLs. No markdown.'
-        ),
-    ]
+        results_lists = await asyncio.gather(*(_run_query(q) for q in custom_queries))
+        raw_urls = [u for sub in results_lists for u in sub]
+        queries_run = len(custom_queries)
 
-    queries = custom_queries if custom_queries else default_queries
-
-    async def fetch_urls(prompt: str) -> list[str]:
+    else:
+        # Default: single rich strategic prompt, let the agent decide its queries.
+        prompt = (
+            f"Today is {datetime.datetime.now().strftime('%d %B %Y')}.\n"
+            f"Target window: {', '.join(month_labels)}.\n\n"
+            "Using Google Search, find the URLs of individual tech event pages "
+            "happening in Lucknow (or online but organised by Lucknow communities) "
+            f"during {months_str}.\n\n"
+            "Design your own search strategy. Run as many targeted searches as needed. "
+            "Return only the final list of individual event page URLs — one per line."
+        )
+        raw_urls = []
         try:
-            response = await client.aio.models.generate_content(
+            resp = await client.aio.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
-                    response_mime_type="application/json",
-                    response_json_schema=DiscoveryResult.model_json_schema(),
-                    temperature=0.1,
+                    temperature=0.2,
+                    system_instruction=_DISCOVERY_SYSTEM_PROMPT,
                 ),
             )
-            parsed = DiscoveryResult.model_validate_json(response.text)
-            return parsed.event_urls
+            raw_urls = _extract_urls_from_text(resp.text or "")
         except Exception as exc:
-            log.warning("discovery.query_error", error=str(exc))
-            return []
+            log.warning("discovery.agent_error", error=str(exc))
+        queries_run = 1
 
-    # Execute all searches concurrently
-    results_lists = await asyncio.gather(*(fetch_urls(q) for q in queries))
-
-    # Flatten, deduplicate, and filter valid HTTPS URLs
+    # ── Deduplicate and filter listing pages ──────────────────────────────────
     seen: set[str] = set()
     urls: list[str] = []
-    for sublist in results_lists:
-        for url in sublist:
-            if isinstance(url, str) and url.startswith("http") and url not in seen:
-                seen.add(url)
-                urls.append(url)
+    listing_dropped = 0
+    for url in raw_urls:
+        if not isinstance(url, str) or not url.startswith("http"):
+            continue
+        if url in seen:
+            continue
+        if _is_listing_page(url):
+            listing_dropped += 1
+            log.debug("discovery.listing_dropped", url=url)
+            continue
+        seen.add(url)
+        urls.append(url)
 
-    results = {"total_found": len(urls), "new": 0, "duplicate": 0, "error": 0, "queries_run": len(queries)}
-    log.info("discovery.search_success", total_urls=len(urls))
+    log.info(
+        "discovery.search_success",
+        total_urls=len(urls),
+        listing_dropped=listing_dropped,
+    )
+
+    results = {
+        "total_found": len(urls),
+        "new": 0,
+        "duplicate": 0,
+        "error": 0,
+        "listing_dropped": listing_dropped,
+        "queries_run": queries_run,
+    }
 
     async with SessionLocal() as db:
         for url in urls:
             try:
-                # Skip duplicate URLs already known
-                stmt = select(Source).filter(Source.base_url == url)
-                res = await db.execute(stmt)
-                if res.scalars().first():
-                    results["duplicate"] += 1
-                    continue
-
-                # Queue via submission service (which runs the AI gate + pipeline)
                 await create_submission(
                     db,
                     event_url=url,
                     submitter_name="AI Discovery Agent",
                     submitter_email="agent@nawab.ai",
-                    notes="Automatically discovered via Gemini Search Grounding (4-month window)",
+                    notes="Automatically discovered via Gemini Search Grounding",
                 )
                 results["new"] += 1
-
             except Exception as e:
                 log.warning("discovery.process_url_failed", url=url, error=str(e))
                 results["error"] += 1

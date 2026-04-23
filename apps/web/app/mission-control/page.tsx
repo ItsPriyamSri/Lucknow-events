@@ -3,7 +3,7 @@
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { adminService, type StatsOut } from "@/lib/admin-api";
-import { Shield, Loader2, LayoutDashboard, Database, Search, Inbox, LogOut } from "lucide-react";
+import { Shield, Loader2, LayoutDashboard, Database, Search, Inbox, List, LogOut } from "lucide-react";
 
 // Sub-components (loaded lazily per tab)
 import { StatsPanel } from "./_components/StatsPanel";
@@ -11,9 +11,10 @@ import { EventsTab } from "./_components/EventsTab";
 import { SourcesTab } from "./_components/SourcesTab";
 import { DiscoveryTab } from "./_components/DiscoveryTab";
 import { ModerationTab } from "./_components/ModerationTab";
+import { EventQueueTab } from "./_components/EventQueueTab";
 
 const SECRET_KEY = "wakandaforever";
-type Tab = "events" | "sources" | "discovery" | "moderation";
+type Tab = "events" | "sources" | "discovery" | "moderation" | "queue";
 
 function DashboardInner() {
   const router = useRouter();
@@ -65,7 +66,8 @@ function DashboardInner() {
     { id: "events", label: "Events", icon: <LayoutDashboard className="w-4 h-4" />, badge: stats?.events_total },
     { id: "sources", label: "Sources", icon: <Database className="w-4 h-4" />, badge: stats?.sources_active },
     { id: "discovery", label: "Discovery", icon: <Search className="w-4 h-4" /> },
-    { id: "moderation", label: "Moderation", icon: <Inbox className="w-4 h-4" />, badge: stats?.pending_moderation },
+    { id: "queue", label: "Queue", icon: <List className="w-4 h-4" /> },
+    { id: "moderation", label: "Community", icon: <Inbox className="w-4 h-4" /> },
   ];
 
   return (
@@ -121,6 +123,7 @@ function DashboardInner() {
         {activeTab === "events" && <EventsTab />}
         {activeTab === "sources" && <SourcesTab />}
         {activeTab === "discovery" && <DiscoveryTab />}
+        {activeTab === "queue" && <EventQueueTab />}
         {activeTab === "moderation" && <ModerationTab />}
       </div>
     </div>

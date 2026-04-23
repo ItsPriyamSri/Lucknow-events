@@ -98,14 +98,90 @@ Rules:
 - NEVER fabricate data."""
 
 
+# ─── Pre-LLM garbage filter ───────────────────────────────────────────────────
+
+_EVENT_VOCAB = {
+    "event", "workshop", "hackathon", "conference", "meetup", "webinar",
+    "register", "rsvp", "tickets", "join us", "session", "talk", "speaker",
+    "seminar", "summit", "fest", "competition", "contest", "bootcamp",
+    "agenda", "schedule", "venue", "attend", "participate",
+}
+
+_JS_NOISE_PATTERNS = (
+    "window.__", "@font-face", "__NEXT_DATA__", "webpackJsonp",
+    "function(", "var ", "const ", ".css(", "document.cookie",
+    "getElementsByTagName", "addEventListener", "querySelector",
+)
+
+_ERROR_SIGNALS = (
+    "page not found", "404 not found", "access denied",
+    "robot check", "enable javascript", "just a moment",
+    "please enable cookies", "checking your browser",
+)
+
+
+def _is_garbage(text: str) -> tuple[bool, str]:
+    """
+    Quick pre-LLM check. Returns (True, reason) if the page content is
+    clearly not worth sending to Gemini.
+    """
+    stripped = text.strip()
+
+    # 1. Too short — 404, redirect, or empty scrape
+    if len(stripped) < 200:
+        return True, "too_short"
+
+    lower = stripped.lower()
+
+    # 2. Known error page signals dominate the content
+    if any(sig in lower for sig in _ERROR_SIGNALS):
+        # Only flag if error signal appears near the top (first 500 chars)
+        top = lower[:500]
+        if any(sig in top for sig in _ERROR_SIGNALS):
+            return True, "error_page"
+
+    # 3. JS/CSS soup — high noise, no useful text
+    noise_hits = sum(1 for pat in _JS_NOISE_PATTERNS if pat in stripped)
+    total_chars = len(stripped)
+    # Rough heuristic: if >4 noise markers AND fewer than 300 non-whitespace
+    # alphabetic chars it's overwhelmingly JS boilerplate
+    alpha_chars = sum(1 for c in stripped if c.isalpha())
+    if noise_hits >= 4 and alpha_chars < 300:
+        return True, "js_soup"
+
+    # 4. No event vocabulary signal at all
+    words = set(lower.split())
+    has_event_word = bool(words & _EVENT_VOCAB)
+    # Allow short pages through if they have any event keyword
+    if not has_event_word and total_chars < 600:
+        return True, "no_event_signal"
+
+    return False, ""
+
+
 async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
     if settings.AI_MODE.lower() == "mock":
         return _mock_extract(inp)
 
+    # ── Pre-LLM garbage filter ────────────────────────────────────────────────
+    import structlog as _sl
+    _log = _sl.get_logger(__name__)
+
+    garbage, reason = _is_garbage(inp.cleaned_text)
+    if garbage:
+        _log.info(
+            "extraction.prefilter_skip",
+            url=inp.page_url,
+            reason=reason,
+            text_len=len(inp.cleaned_text),
+        )
+        return GeminiExtractionOutput(not_an_event=True, confidence=0.0)
+
     client = get_client()
     model = settings.GEMINI_MODEL
 
-    # Heuristic: detect JS-heavy SPA pages that have no useful date signal.
+    # Heuristic: detect JS-heavy SPA pages that have an event signal but no
+    # date signal — worth trying grounded search rather than raw text.
     import re
     text_lower = inp.cleaned_text.lower()
     _DATE_KEYWORDS = (
@@ -115,14 +191,17 @@ async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
         "morning", "evening", "afternoon",
     )
     has_date_signal = any(kw in text_lower for kw in _DATE_KEYWORDS)
+    # Only trigger grounded fallback on longer pages; short pages are already
+    # filtered above — if we reach here the page has meaningful event content.
     is_js_soup = (
-        not has_date_signal and
-        (
-            "window.__" in inp.cleaned_text or
-            "@font-face" in inp.cleaned_text or
-            len(inp.cleaned_text) > 4000
+        not has_date_signal
+        and len(inp.cleaned_text) > 2000
+        and (
+            "window.__" in inp.cleaned_text
+            or "@font-face" in inp.cleaned_text
         )
     )
+
 
     user_prompt = (
         f"Source platform: {inp.source_platform}\n"
@@ -180,16 +259,96 @@ async def extract_event(inp: ExtractionInput) -> GeminiExtractionOutput:
         )
         parsed = getattr(resp, "parsed", None)
         if parsed is not None:
-            return (
+            result = (
                 parsed
                 if isinstance(parsed, GeminiExtractionOutput)
                 else GeminiExtractionOutput.model_validate(parsed)
             )
-        return GeminiExtractionOutput.model_validate_json(resp.text)
+        else:
+            result = GeminiExtractionOutput.model_validate_json(resp.text)
+
+        # ── Grounded date fallback ─────────────────────────────────────────────
+        # If the main extraction got a real event but couldn't find the date,
+        # fire a targeted grounded search to find just the date/time.
+        if result.start_at is None and not result.not_an_event and result.confidence >= 0.30:
+            try:
+                date_result = await grounded_date_search(
+                    page_url=inp.page_url,
+                    known_title=result.title,
+                )
+                if date_result.get("start_at"):
+                    result.start_at = date_result["start_at"]
+                    result.end_at = date_result.get("end_at") or result.end_at
+                    result.confidence = max(result.confidence, 0.65)
+                    import structlog as _sl
+                    _sl.get_logger(__name__).info(
+                        "extraction.grounded_date_filled",
+                        url=inp.page_url,
+                        start_at=result.start_at,
+                    )
+            except Exception as _de:
+                import structlog as _sl
+                _sl.get_logger(__name__).debug("extraction.grounded_date_failed", error=str(_de))
+
+        return result
+
     except Exception:
         if settings.AI_FALLBACK_TO_MOCK:
             return _mock_extract(inp)
         raise
+
+
+async def grounded_date_search(page_url: str, known_title: str | None) -> dict:
+    """
+    Targeted grounded search to find the start/end date of an event whose
+    page content didn't contain parseable date information.
+
+    Returns a dict with keys: start_at (ISO str | None), end_at (ISO str | None).
+    This is intentionally cheap — it only asks Gemini for 2 fields.
+    """
+    if settings.AI_MODE.lower() == "mock":
+        return {"start_at": None, "end_at": None}
+
+    from pydantic import BaseModel as _BM
+    from google.genai import types
+
+    class _DateOnly(_BM):
+        start_at: str | None = None
+        end_at: str | None = None
+
+    client = get_client()
+    prompt = (
+        f"Find the exact date and time for this event.\n"
+        f"Event URL: {page_url}\n"
+        f"Event title (if known): {known_title or 'unknown'}\n\n"
+        "Search the web for this specific event and return:\n"
+        "- start_at: ISO 8601 datetime with +05:30 offset (e.g. 2026-05-15T10:00:00+05:30)\n"
+        "- end_at: ISO 8601 datetime with +05:30 offset, or null if not found\n\n"
+        "If you cannot find the date for this event even after searching, return null for both fields."
+    )
+    system = (
+        "You are a date-lookup agent. Use Google Search to find the exact date and time of the given event. "
+        "Return ONLY start_at and end_at as ISO 8601 strings with +05:30 timezone. "
+        "Never fabricate dates. Return null if not found."
+    )
+    try:
+        resp = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                response_mime_type="application/json",
+                response_json_schema=_DateOnly.model_json_schema(),
+                system_instruction=system,
+                temperature=0.0,
+            ),
+        )
+        result = _DateOnly.model_validate_json(resp.text)
+        return {"start_at": result.start_at, "end_at": result.end_at}
+    except Exception:
+        return {"start_at": None, "end_at": None}
+
+
 
 
 def _mock_extract(inp: ExtractionInput) -> GeminiExtractionOutput:
