@@ -3,11 +3,14 @@ import axios from "axios";
 const DEFAULT = "http://localhost:8000/api/v1";
 
 function baseUrl(): string {
+  // Browser: relative path goes through Next.js rewrite proxy
   if (typeof window !== "undefined") return "/api/v1";
-  const isVercel = process.env.VERCEL === "1";
-  return isVercel
-    ? (process.env.NEXT_PUBLIC_API_URL || DEFAULT)
-    : (process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT);
+  // SSR: Docker dev uses INTERNAL_API_URL, production uses NEXT_PUBLIC_API_URL
+  return (
+    process.env.INTERNAL_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    DEFAULT
+  );
 }
 
 export const adminApi = axios.create({
