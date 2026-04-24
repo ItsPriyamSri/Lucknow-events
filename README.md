@@ -53,7 +53,7 @@ The platform is built and maintained by the Lucknow tech community, for the Luck
 | Backend API | FastAPI, Python 3.12, SQLAlchemy 2.0 (async) |
 | Task Queue | Celery + Redis |
 | Database | PostgreSQL 16 |
-| AI | Google Gemini 2.0 Flash via `google-genai` SDK |
+| AI | Google Gemini 3.0 Flash via `google-genai` SDK |
 | Containerisation | Docker / Podman Compose |
 | Migrations | Alembic |
 
