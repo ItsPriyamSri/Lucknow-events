@@ -1,10 +1,29 @@
 const DEFAULT_API_URL = "http://localhost:8000/api/v1";
 
 function resolveBaseUrl(): string {
-  // Browser: always go through Next.js rewrite (/api/v1/*).
-  // Server (SSR/ISR/build): use INTERNAL_API_URL when available, else NEXT_PUBLIC_API_URL.
+  // Browser: always use relative path — the Next.js rewrite handles the proxy.
+  // (On Vercel the rewrite routes /api/v1/* → /_/backend/api/v1/*.)
   if (typeof window !== "undefined") return "/api/v1";
-  return process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL;
+
+  // Server-side (SSR / ISR / build-time):
+  //   On Vercel: no Docker network, so INTERNAL_API_URL won't work.
+  //              Use NEXT_PUBLIC_API_URL (must be the full public URL, e.g. https://yourapp.vercel.app/api/v1).
+  //   Docker dev: INTERNAL_API_URL points to the api container (http://api:8000/api/v1).
+  //   Plain local dev: falls back to localhost.
+  const isVercel = process.env.VERCEL === "1";
+  const url = isVercel
+    ? process.env.NEXT_PUBLIC_API_URL
+    : (process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL);
+
+  if (!url) {
+    console.warn(
+      "[api] Neither NEXT_PUBLIC_API_URL nor INTERNAL_API_URL is set. " +
+        "Falling back to localhost — this will fail in production."
+    );
+    return DEFAULT_API_URL;
+  }
+
+  return url;
 }
 
 export interface Event {

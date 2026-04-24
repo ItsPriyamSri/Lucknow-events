@@ -1,6 +1,6 @@
 "use client";
 
-import { adminService, type AdminSource, type ModerationItem, type StatsOut } from "@/lib/admin-api";
+import { adminService, type AdminSource, type CommunitySubmission, type StatsOut } from "@/lib/admin-api";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 export default function AdminDashboardPage() {
   const router = useRouter();
   const [sources, setSources] = useState<AdminSource[]>([]);
-  const [queue, setQueue] = useState<ModerationItem[]>([]);
+  const [queue, setQueue] = useState<CommunitySubmission[]>([]);
   const [stats, setStats] = useState<StatsOut | null>(null);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -17,7 +17,7 @@ export default function AdminDashboardPage() {
     try {
       const [s, q, st] = await Promise.all([
         adminService.listSources(),
-        adminService.listModeration(),
+        adminService.listCommunitySubmissions(),
         adminService.stats(),
       ]);
       setErr("");
@@ -82,7 +82,7 @@ export default function AdminDashboardPage() {
   async function approve(id: string) {
     setMsg("");
     try {
-      await adminService.approve(id);
+      await adminService.approveModeration(id);
       setQueue((q) => q.filter((x) => x.id !== id));
       void load();
     } catch {
@@ -93,7 +93,7 @@ export default function AdminDashboardPage() {
   async function reject(id: string) {
     setMsg("");
     try {
-      await adminService.reject(id);
+      await adminService.rejectModeration(id);
       setQueue((q) => q.filter((x) => x.id !== id));
       void load();
     } catch {
@@ -201,9 +201,8 @@ export default function AdminDashboardPage() {
               >
                 <div>
                   <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
-                  <p className="text-sm">
-                    {item.entity_type} · {item.reason || "pending"}
-                  </p>
+                  <p className="text-sm font-medium">{item.community_name || "—"}</p>
+                  <p className="text-xs text-muted-foreground">{item.notes || item.status}</p>
                 </div>
                 <div className="flex gap-2">
                   <button

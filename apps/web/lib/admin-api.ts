@@ -4,7 +4,10 @@ const DEFAULT = "http://localhost:8000/api/v1";
 
 function baseUrl(): string {
   if (typeof window !== "undefined") return "/api/v1";
-  return process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT;
+  const isVercel = process.env.VERCEL === "1";
+  return isVercel
+    ? (process.env.NEXT_PUBLIC_API_URL || DEFAULT)
+    : (process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT);
 }
 
 export const adminApi = axios.create({
