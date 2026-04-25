@@ -12,16 +12,29 @@ export function ClientLayoutWrapper({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Keep Render free-tier backend alive by pinging /health every 10 minutes
+  // Keep Render free-tier backend alive by pinging /health every 30 seconds
   useEffect(() => {
-    const PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+    const PING_INTERVAL_MS = 30 * 1000; // 30 seconds
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
-    if (!apiUrl) return;
+    if (!apiUrl) {
+      console.warn("[keep-alive] NEXT_PUBLIC_API_URL is not set — skipping keep-alive pings.");
+      return;
+    }
 
-    const ping = () => {
-      fetch(`${apiUrl}/health`, { method: "GET", keepalive: true }).catch(() => {
-        // Silently ignore — this is a best-effort keep-alive
-      });
+    const ping = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 s timeout
+        const res = await fetch(`${apiUrl}/health`, {
+          method: "GET",
+          keepalive: true,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        console.log(`[keep-alive] ✅ Backend alive — status ${res.status}`);
+      } catch (err) {
+        console.warn("[keep-alive] ⚠️ Ping failed:", err);
+      }
     };
 
     // Fire immediately on mount, then on interval
