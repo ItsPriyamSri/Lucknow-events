@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Menu, X } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { usePathname } from "next/navigation";
@@ -10,6 +10,28 @@ export function ClientLayoutWrapper({ children }: { children: React.ReactNode })
   const [isOpen, setIsOpen] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
   const pathname = usePathname();
+  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Keep Render free-tier backend alive by pinging /health every 10 minutes
+  useEffect(() => {
+    const PING_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+    if (!apiUrl) return;
+
+    const ping = () => {
+      fetch(`${apiUrl}/health`, { method: "GET", keepalive: true }).catch(() => {
+        // Silently ignore — this is a best-effort keep-alive
+      });
+    };
+
+    // Fire immediately on mount, then on interval
+    ping();
+    keepAliveRef.current = setInterval(ping, PING_INTERVAL_MS);
+
+    return () => {
+      if (keepAliveRef.current !== null) clearInterval(keepAliveRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     setIsMounted(true);
