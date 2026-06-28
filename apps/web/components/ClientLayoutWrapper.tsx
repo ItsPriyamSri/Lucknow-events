@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { Menu, X } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { usePathname } from "next/navigation";
+import { logError, logger } from "@/lib/logger";
 
 export function ClientLayoutWrapper({ children }: { children: React.ReactNode }) {
   // Default to open on larger screens, closed on mobile initially
@@ -17,7 +18,7 @@ export function ClientLayoutWrapper({ children }: { children: React.ReactNode })
     const PING_INTERVAL_MS = 30 * 1000; // 30 seconds
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
     if (!apiUrl) {
-      console.warn("[keep-alive] NEXT_PUBLIC_API_URL is not set — skipping keep-alive pings.");
+      logger.warn({ reason: "NEXT_PUBLIC_API_URL unset" }, "keep_alive.skipped");
       return;
     }
 
@@ -31,9 +32,9 @@ export function ClientLayoutWrapper({ children }: { children: React.ReactNode })
           signal: controller.signal,
         });
         clearTimeout(timeoutId);
-        console.log(`[keep-alive] ✅ Backend alive — status ${res.status}`);
+        logger.debug({ status: res.status }, "keep_alive.ping_ok");
       } catch (err) {
-        console.warn("[keep-alive] ⚠️ Ping failed:", err);
+        logError(err, "keep_alive.ping_failed");
       }
     };
 

@@ -189,3 +189,4 @@ temp/
 # Whitelist specific markdown files
 !README.md
 !developer-help.md
+!current-state.md
