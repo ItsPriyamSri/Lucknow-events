@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in */backend/*.py) rel=\"${f##*/backend/}\"; if [ -n \"$(docker compose -f docker/docker-compose.dev.yml ps --status running -q api 2>/dev/null)\" ]; then docker compose -f docker/docker-compose.dev.yml exec -T api ruff check --fix \"/app/$rel\"; fi ;; esac; } || true",
+            "statusMessage": "Linting backend file (ruff, if dev stack is up)..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in */apps/web/*.ts|*/apps/web/*.tsx) (cd apps/web && ./node_modules/.bin/eslint --fix \"$f\") ;; esac; } || true",
+            "statusMessage": "Linting frontend file (eslint)..."
+          }
+        ]
+      }
+    ]
+  }
+}
